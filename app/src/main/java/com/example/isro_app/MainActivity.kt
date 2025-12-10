@@ -1,0 +1,1033 @@
+package com.example.isro_app
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Attachment
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.Divider
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.toMutableStateList
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.ClipboardManager
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import com.example.isro_app.ui.theme.Divider
+import com.example.isro_app.ui.theme.ISRO_APPTheme
+import com.example.isro_app.ui.theme.PrimaryBlue
+import com.example.isro_app.ui.theme.Surface
+import com.example.isro_app.ui.theme.SurfaceMuted
+import com.example.isro_app.ui.theme.TextPrimary
+import com.example.isro_app.ui.theme.TextSecondary
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.UUID
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            ISRO_APPTheme {
+                IsroApp()
+            }
+        }
+    }
+}
+
+private enum class WindowSize { Compact, Medium, Expanded }
+
+@Composable
+private fun rememberWindowSize(): WindowSize {
+    val widthDp = LocalConfiguration.current.screenWidthDp
+    return when {
+        widthDp <= 600 -> WindowSize.Compact
+        widthDp <= 840 -> WindowSize.Medium
+        else -> WindowSize.Expanded
+    }
+}
+
+private enum class DeviceStatus { Online, Offline }
+private enum class DeviceSort { NAME, STATUS }
+private enum class MessageOwner { Local, Remote }
+private enum class DeliveryState { Pending, Delivered, Failed }
+
+private data class Device(
+    val clientId: String,
+    val displayName: String,
+    val ip: String,
+    val status: DeviceStatus,
+    val lastSeen: Long,
+    val lat: Double,
+    val lon: Double
+)
+
+private data class Attachment(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val sizeBytes: Long,
+    val type: String
+)
+
+private data class Message(
+    val id: String = UUID.randomUUID().toString(),
+    val from: String,
+    val to: String,
+    val text: String?,
+    val attachment: Attachment? = null,
+    val timestamp: Long,
+    val owner: MessageOwner,
+    val state: DeliveryState = DeliveryState.Delivered
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun IsroApp() {
+    val windowSize = rememberWindowSize()
+    val devices = remember { sampleDevices() }
+    var selectedDeviceId by rememberSaveable { mutableStateOf(devices.first().clientId) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var sortBy by rememberSaveable { mutableStateOf(DeviceSort.NAME) }
+    var isListCollapsed by rememberSaveable { mutableStateOf(false) }
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+
+    val messagesPerDevice = remember {
+        mutableStateMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<Message>>().apply {
+            devices.forEach { device ->
+                put(
+                    device.clientId,
+                    androidx.compose.runtime.snapshots.SnapshotStateList<Message>().apply {
+                        addAll(sampleChat(device.clientId))
+                    }
+                )
+            }
+        }
+    }
+
+    val drafts = remember { mutableStateMapOf<String, String>() }
+    val attachments = remember { mutableStateMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<Attachment>>() }
+
+    val filtered = remember(searchQuery, sortBy, devices) {
+        devices
+            .filter { it.displayName.contains(searchQuery, ignoreCase = true) || it.ip.contains(searchQuery, true) }
+            .sortedWith(
+                when (sortBy) {
+                    DeviceSort.NAME -> compareBy { it.displayName.lowercase() }
+                    DeviceSort.STATUS -> compareBy<Device> { it.status == DeviceStatus.Online }.reversed()
+                }
+            )
+    }
+
+    val selectedDevice = filtered.find { it.clientId == selectedDeviceId } ?: filtered.firstOrNull()
+    if (selectedDevice != null && selectedDevice.clientId != selectedDeviceId) {
+        selectedDeviceId = selectedDevice.clientId
+    }
+
+    val sendMessage: (String, String?, Attachment?) -> Unit = sendMessage@{ text, _, attachment ->
+        val deviceId = selectedDeviceId
+        val msgList = messagesPerDevice.getOrPut(deviceId) { mutableStateListOf() }
+
+        if (text.isBlank() && attachment == null) {
+            return@sendMessage
+        }
+
+        val pending = Message(
+            from = "you",
+            to = deviceId,
+            text = text,
+            attachment = attachment,
+            timestamp = System.currentTimeMillis(),
+            owner = MessageOwner.Local,
+            state = DeliveryState.Pending
+        )
+
+        msgList.add(pending)
+
+        scope.launch {
+            delay(600)
+            val idx = msgList.indexOfFirst { it.id == pending.id }
+            if (idx >= 0) {
+                msgList[idx] = msgList[idx].copy(state = DeliveryState.Delivered)
+            }
+        }
+    }
+
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        gesturesEnabled = windowSize == WindowSize.Compact,
+        drawerContent = {
+            if (windowSize == WindowSize.Compact) {
+                DrawerContent(
+                    devices = filtered,
+                    selectedDeviceId = selectedDeviceId,
+                    onSelect = {
+                        selectedDeviceId = it
+                        scope.launch { drawerState.close() }
+                    },
+                    searchQuery = searchQuery,
+                    onSearch = { searchQuery = it },
+                    sortBy = sortBy,
+                    onSortChange = { sortBy = it },
+                    coordinatesCard = {
+                        selectedDevice?.let {
+                            CoordinatesCard(device = it)
+                        }
+                    }
+                )
+            }
+        }
+    ) {
+        Scaffold(
+            topBar = {
+                CenterAlignedTopAppBar(
+                    title = {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(text = stringResource(id = R.string.app_name), style = MaterialTheme.typography.headlineSmall)
+                            Text(
+                                text = "Network: 192.168.1.0/24",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = TextSecondary
+                            )
+                        }
+                    },
+                    navigationIcon = {
+                        val isDrawerOpen = drawerState.currentValue == DrawerValue.Open
+                        IconButton(
+                            onClick = {
+                                if (windowSize == WindowSize.Compact) {
+                                    scope.launch {
+                                        if (isDrawerOpen) {
+                                            drawerState.close()
+                                        } else {
+                                            drawerState.open()
+                                        }
+                                    }
+                                } else {
+                                    isListCollapsed = !isListCollapsed
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = if (windowSize == WindowSize.Compact && isDrawerOpen) {
+                                    Icons.Default.Close
+                                } else {
+                                    Icons.Default.Menu
+                                },
+                                contentDescription = if (windowSize == WindowSize.Compact && isDrawerOpen) {
+                                    "Close menu"
+                                } else {
+                                    "Open menu"
+                                }
+                            )
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { /* refresh hook */ }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        }
+                        IconButton(onClick = { /* settings hook */ }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                        }
+                    }
+                )
+            }
+        ) { paddingValues ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+            ) {
+                when (windowSize) {
+                    WindowSize.Compact -> MobileLayout(
+                        devices = filtered,
+                        selectedDevice = selectedDevice,
+                        messages = messagesPerDevice[selectedDeviceId].orEmpty(),
+                        onMessageSend = { text, attachment ->
+                            sendMessage(text, null, attachment)
+                            drafts[selectedDeviceId] = ""
+                            attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }.clear()
+                        },
+                        draft = drafts[selectedDeviceId].orEmpty(),
+                        onDraftChange = { drafts[selectedDeviceId] = it },
+                        selectedAttachments = attachments[selectedDeviceId].orEmpty(),
+                        onAddAttachment = {
+                            val list = attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }
+                            list.add(it)
+                        },
+                        onRemoveAttachment = { att ->
+                            attachments[selectedDeviceId]?.remove(att)
+                        },
+                        onSelectDevice = {
+                            selectedDeviceId = it
+                            scope.launch { drawerState.close() }
+                        },
+                        onFullMap = { /* full map hook */ }
+                    )
+
+                    WindowSize.Medium -> MediumLayout(
+                        devices = filtered,
+                        selectedDeviceId = selectedDeviceId,
+                        onSelectDevice = { selectedDeviceId = it },
+                        isCollapsed = isListCollapsed,
+                        onCollapseToggle = { isListCollapsed = !isListCollapsed },
+                        searchQuery = searchQuery,
+                        onSearch = { searchQuery = it },
+                        sortBy = sortBy,
+                        onSortChange = { sortBy = it },
+                        selectedDevice = selectedDevice,
+                        messages = messagesPerDevice[selectedDeviceId].orEmpty(),
+                        draft = drafts[selectedDeviceId].orEmpty(),
+                        onDraftChange = { drafts[selectedDeviceId] = it },
+                        attachments = attachments[selectedDeviceId].orEmpty(),
+                        onAddAttachment = { att ->
+                            val list = attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }
+                            list.add(att)
+                        },
+                        onRemoveAttachment = { att -> attachments[selectedDeviceId]?.remove(att) },
+                        onSend = { text, attachment ->
+                            sendMessage(text, null, attachment)
+                            drafts[selectedDeviceId] = ""
+                            attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }.clear()
+                        }
+                    )
+
+                    WindowSize.Expanded -> ExpandedLayout(
+                        devices = filtered,
+                        selectedDeviceId = selectedDeviceId,
+                        onSelectDevice = { selectedDeviceId = it },
+                        searchQuery = searchQuery,
+                        onSearch = { searchQuery = it },
+                        sortBy = sortBy,
+                        onSortChange = { sortBy = it },
+                        selectedDevice = selectedDevice,
+                        messages = messagesPerDevice[selectedDeviceId].orEmpty(),
+                        draft = drafts[selectedDeviceId].orEmpty(),
+                        onDraftChange = { drafts[selectedDeviceId] = it },
+                        attachments = attachments[selectedDeviceId].orEmpty(),
+                        onAddAttachment = { att ->
+                            val list = attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }
+                            list.add(att)
+                        },
+                        onRemoveAttachment = { att -> attachments[selectedDeviceId]?.remove(att) },
+                        onSend = { text, attachment ->
+                            sendMessage(text, null, attachment)
+                            drafts[selectedDeviceId] = ""
+                            attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }.clear()
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DrawerContent(
+    devices: List<Device>,
+    selectedDeviceId: String,
+    onSelect: (String) -> Unit,
+    searchQuery: String,
+    onSearch: (String) -> Unit,
+    sortBy: DeviceSort,
+    onSortChange: (DeviceSort) -> Unit,
+    coordinatesCard: @Composable () -> Unit
+) {
+    ModalDrawerSheet {
+        DrawerHeader(
+            searchQuery = searchQuery,
+            onSearch = onSearch,
+            sortBy = sortBy,
+            onSortChange = onSortChange
+        )
+        DrawerDeviceList(
+            devices = devices,
+            selectedDeviceId = selectedDeviceId,
+            onSelect = onSelect
+        )
+        Divider()
+        coordinatesCard()
+    }
+}
+
+@Composable
+private fun DrawerHeader(
+    searchQuery: String,
+    onSearch: (String) -> Unit,
+    sortBy: DeviceSort,
+    onSortChange: (DeviceSort) -> Unit
+) {
+    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(text = "Devices on LAN", style = MaterialTheme.typography.headlineSmall)
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = onSearch,
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+            placeholder = { Text("Search name or IP") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AssistChip(
+                onClick = { onSortChange(DeviceSort.NAME) },
+                label = { Text("Name") },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.FilterList,
+                        contentDescription = null
+                    )
+                },
+                colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+                    containerColor = if (sortBy == DeviceSort.NAME) PrimaryBlue.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surface
+                )
+            )
+            AssistChip(
+                onClick = { onSortChange(DeviceSort.STATUS) },
+                label = { Text("Status") },
+                colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+                    containerColor = if (sortBy == DeviceSort.STATUS) PrimaryBlue.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surface
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun DrawerDeviceList(
+    devices: List<Device>,
+    selectedDeviceId: String,
+    onSelect: (String) -> Unit
+) {
+    if (devices.isEmpty()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("No devices found on this network", style = MaterialTheme.typography.bodyLarge)
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(onClick = { /* refresh */ }) {
+                Icon(Icons.Default.Refresh, contentDescription = null)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Refresh")
+            }
+        }
+        return
+    }
+    LazyColumn {
+        items(devices, key = { it.clientId }) { device ->
+            NavigationDrawerItem(
+                label = {
+                    Column {
+                        Text(device.displayName, fontWeight = FontWeight.SemiBold)
+                        Text("${device.ip} • ${formatRelativeTime(device.lastSeen)}", style = MaterialTheme.typography.bodyMedium)
+                    }
+                },
+                selected = device.clientId == selectedDeviceId,
+                onClick = { onSelect(device.clientId) },
+                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                badge = {
+                    StatusDot(device.status)
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun MobileLayout(
+    devices: List<Device>,
+    selectedDevice: Device?,
+    messages: List<Message>,
+    onMessageSend: (String, Attachment?) -> Unit,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    selectedAttachments: List<Attachment>,
+    onAddAttachment: (Attachment) -> Unit,
+    onRemoveAttachment: (Attachment) -> Unit,
+    onSelectDevice: (String) -> Unit,
+    onFullMap: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(SurfaceMuted),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        selectedDevice?.let {
+            MapCard(
+                device = it,
+                onFullScreen = onFullMap
+            )
+        }
+        ChatPane(
+            device = selectedDevice,
+            messages = messages,
+            draft = draft,
+            onDraftChange = onDraftChange,
+            attachments = selectedAttachments,
+            onAddAttachment = onAddAttachment,
+            onRemoveAttachment = onRemoveAttachment,
+            onSend = onMessageSend
+        )
+    }
+}
+
+@Composable
+private fun MediumLayout(
+    devices: List<Device>,
+    selectedDeviceId: String,
+    onSelectDevice: (String) -> Unit,
+    isCollapsed: Boolean,
+    onCollapseToggle: () -> Unit,
+    searchQuery: String,
+    onSearch: (String) -> Unit,
+    sortBy: DeviceSort,
+    onSortChange: (DeviceSort) -> Unit,
+    selectedDevice: Device?,
+    messages: List<Message>,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    attachments: List<Attachment>,
+    onAddAttachment: (Attachment) -> Unit,
+    onRemoveAttachment: (Attachment) -> Unit,
+    onSend: (String, Attachment?) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(SurfaceMuted)
+    ) {
+        if (!isCollapsed) {
+            DevicePanel(
+                devices = devices,
+                selectedDeviceId = selectedDeviceId,
+                onSelect = onSelectDevice,
+                searchQuery = searchQuery,
+                onSearch = onSearch,
+                sortBy = sortBy,
+                onSortChange = onSortChange,
+                coordinatesCard = {
+                    selectedDevice?.let { CoordinatesCard(it) }
+                },
+                modifier = Modifier.width(320.dp)
+            )
+        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            selectedDevice?.let { MapCard(device = it, onFullScreen = onCollapseToggle) }
+            ChatPane(
+                device = selectedDevice,
+                messages = messages,
+                draft = draft,
+                onDraftChange = onDraftChange,
+                attachments = attachments,
+                onAddAttachment = onAddAttachment,
+                onRemoveAttachment = onRemoveAttachment,
+                onSend = onSend
+            )
+        }
+    }
+}
+
+@Composable
+private fun ExpandedLayout(
+    devices: List<Device>,
+    selectedDeviceId: String,
+    onSelectDevice: (String) -> Unit,
+    searchQuery: String,
+    onSearch: (String) -> Unit,
+    sortBy: DeviceSort,
+    onSortChange: (DeviceSort) -> Unit,
+    selectedDevice: Device?,
+    messages: List<Message>,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    attachments: List<Attachment>,
+    onAddAttachment: (Attachment) -> Unit,
+    onRemoveAttachment: (Attachment) -> Unit,
+    onSend: (String, Attachment?) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(SurfaceMuted)
+    ) {
+        DevicePanel(
+            devices = devices,
+            selectedDeviceId = selectedDeviceId,
+            onSelect = onSelectDevice,
+            searchQuery = searchQuery,
+            onSearch = onSearch,
+            sortBy = sortBy,
+            onSortChange = onSortChange,
+            coordinatesCard = {
+                selectedDevice?.let { CoordinatesCard(it) }
+            },
+            modifier = Modifier.width(320.dp)
+        )
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            selectedDevice?.let { MapCard(device = it, onFullScreen = {}) }
+        }
+        ChatPane(
+            device = selectedDevice,
+            messages = messages,
+            draft = draft,
+            onDraftChange = onDraftChange,
+            attachments = attachments,
+            onAddAttachment = onAddAttachment,
+            onRemoveAttachment = onRemoveAttachment,
+            onSend = onSend,
+            modifier = Modifier
+                .width(360.dp)
+                .fillMaxHeight()
+        )
+    }
+}
+
+@Composable
+private fun DevicePanel(
+    devices: List<Device>,
+    selectedDeviceId: String,
+    onSelect: (String) -> Unit,
+    searchQuery: String,
+    onSearch: (String) -> Unit,
+    sortBy: DeviceSort,
+    onSortChange: (DeviceSort) -> Unit,
+    coordinatesCard: @Composable () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .background(MaterialTheme.colorScheme.surface)
+    ) {
+        DrawerHeader(searchQuery, onSearch, sortBy, onSortChange)
+        Divider()
+        DrawerDeviceList(
+            devices = devices,
+            selectedDeviceId = selectedDeviceId,
+            onSelect = onSelect
+        )
+        Divider()
+        Box(modifier = Modifier.padding(16.dp)) {
+            coordinatesCard()
+        }
+    }
+}
+
+@Composable
+private fun CoordinatesCard(device: Device) {
+    OutlinedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Selected Device Coordinates", style = MaterialTheme.typography.headlineSmall)
+            Text("Lat: ${"%.7f".format(device.lat)}", style = MaterialTheme.typography.bodyLarge)
+            Text("Lon: ${"%.7f".format(device.lon)}", style = MaterialTheme.typography.bodyLarge)
+            Text("Last update: ${formatTime(device.lastSeen)}", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val clipboard: ClipboardManager = LocalClipboardManager.current
+                OutlinedButton(onClick = {
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString("${device.lat}, ${device.lon}"))
+                }) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy coordinates")
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Copy")
+                }
+                OutlinedButton(onClick = { /* open maps */ }) {
+                    Icon(Icons.Default.MyLocation, contentDescription = "Open in maps")
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Open in Maps")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MapCard(device: Device, onFullScreen: () -> Unit) {
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .height(220.dp),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(PrimaryBlue.copy(alpha = 0.15f), Surface)
+                    )
+                )
+        ) {
+    Text(
+                text = "Map placeholder (bind Mapbox/Google Maps later)",
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(12.dp),
+                color = TextSecondary
+            )
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(device.displayName, fontWeight = FontWeight.Bold)
+                Text("${device.lat}, ${device.lon}", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+            }
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                IconButton(onClick = { /* zoom out hook */ }) {
+                    Icon(Icons.Default.ZoomOut, contentDescription = "Zoom out")
+                }
+                IconButton(onClick = { /* zoom in hook */ }) {
+                    Icon(Icons.Default.ZoomIn, contentDescription = "Zoom in")
+                }
+                IconButton(onClick = { /* locate me hook */ }) {
+                    Icon(Icons.Default.MyLocation, contentDescription = "Locate me")
+                }
+                IconButton(onClick = onFullScreen) {
+                    Icon(Icons.Default.Info, contentDescription = "Toggle fullscreen")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatPane(
+    device: Device?,
+    messages: List<Message>,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    attachments: List<Attachment>,
+    onAddAttachment: (Attachment) -> Unit,
+    onRemoveAttachment: (Attachment) -> Unit,
+    onSend: (String, Attachment?) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.lastIndex)
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+            Column {
+                Text(device?.displayName ?: "No device selected", style = MaterialTheme.typography.headlineSmall)
+                if (device != null) {
+                    Text(
+                        "Last seen ${formatRelativeTime(device.lastSeen)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+                }
+            }
+            device?.let { StatusDot(it.status) }
+        }
+        Divider()
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f, fill = true)
+                .fillMaxWidth(),
+            state = listState
+        ) {
+            items(messages, key = { it.id }) { msg ->
+                ChatBubble(message = msg)
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+        }
+        if (attachments.isNotEmpty()) {
+            AttachmentPreviewRow(attachments = attachments, onRemove = onRemoveAttachment)
+        }
+        ChatInput(
+            value = draft,
+            onValueChange = onDraftChange,
+            onAttach = {
+                onAddAttachment(
+                    Attachment(
+                        name = "sample_${attachments.size + 1}.png",
+                        sizeBytes = 1_200_000,
+                        type = "image/png"
+                    )
+                )
+            },
+            onSend = {
+                onSend(draft, attachments.firstOrNull())
+            },
+            canSend = draft.isNotBlank() || attachments.isNotEmpty()
+        )
+    }
+}
+
+@Composable
+private fun ChatBubble(message: Message) {
+    val alignEnd = message.owner == MessageOwner.Local
+    val bubbleColor = if (alignEnd) PrimaryBlue.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (alignEnd) Arrangement.End else Arrangement.Start
+    ) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = 320.dp)
+                .background(bubbleColor, shape = RoundedCornerShape(12.dp))
+                .padding(12.dp)
+        ) {
+            message.text?.let { Text(it, color = TextPrimary) }
+            message.attachment?.let {
+                Spacer(modifier = Modifier.height(6.dp))
+                AttachmentChip(it)
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(formatTime(message.timestamp), style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                when (message.state) {
+                    DeliveryState.Pending -> Text("Sending…", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                    DeliveryState.Delivered -> Text("✓", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                    DeliveryState.Failed -> Text("Retry", style = MaterialTheme.typography.bodyMedium, color = Color.Red)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentChip(attachment: Attachment) {
+    Row(
+        modifier = Modifier
+            .background(PrimaryBlue.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(Icons.Default.Attachment, contentDescription = null, tint = PrimaryBlue)
+        Text("${attachment.name} • ${formatSize(attachment.sizeBytes)}", color = TextPrimary)
+    }
+}
+
+@Composable
+private fun AttachmentPreviewRow(
+    attachments: List<Attachment>,
+    onRemove: (Attachment) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        attachments.forEach { att ->
+            OutlinedCard {
+                Row(
+                    modifier = Modifier
+                        .padding(8.dp)
+                        .align(Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.Attachment, contentDescription = null)
+                    Column {
+                        Text(att.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(formatSize(att.sizeBytes), style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                    }
+                    IconButton(onClick = { onRemove(att) }) {
+                        Icon(Icons.Default.Close, contentDescription = "Remove attachment")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onAttach: () -> Unit,
+    onSend: () -> Unit,
+    canSend: Boolean
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        IconButton(onClick = onAttach) {
+            Icon(Icons.Default.Attachment, contentDescription = "Attach file")
+        }
+        TextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = { Text("Message…") },
+            modifier = Modifier.weight(1f),
+            maxLines = 5,
+            keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Send, keyboardType = KeyboardType.Text),
+            keyboardActions = KeyboardActions(onSend = { if (canSend) onSend() })
+        )
+        IconButton(onClick = onSend, enabled = canSend) {
+            Icon(Icons.Default.Send, contentDescription = "Send")
+        }
+    }
+}
+
+@Composable
+private fun StatusDot(status: DeviceStatus) {
+    val color = when (status) {
+        DeviceStatus.Online -> Color(0xFF2E7D32)
+        DeviceStatus.Offline -> Color(0xFFE65100)
+    }
+    Box(
+        modifier = Modifier
+            .size(12.dp)
+            .background(color, shape = CircleShape)
+    )
+}
+
+private fun sampleDevices(): List<Device> = listOf(
+    Device("PiA", "Pi A", "192.168.1.10", DeviceStatus.Online, System.currentTimeMillis() - 2 * 60 * 1000, 12.9715987, 77.594566),
+    Device("PiB", "Pi B", "192.168.1.11", DeviceStatus.Online, System.currentTimeMillis() - 5 * 60 * 1000, 12.975, 77.595),
+    Device("Jetson", "Jetson TX2", "192.168.1.12", DeviceStatus.Offline, System.currentTimeMillis() - 45 * 60 * 1000, 12.97, 77.59),
+    Device("Truck", "Rover Truck", "192.168.1.14", DeviceStatus.Online, System.currentTimeMillis() - 10 * 60 * 1000, 12.965, 77.6),
+    Device("Relay", "Relay Node", "192.168.1.15", DeviceStatus.Online, System.currentTimeMillis() - 90 * 1000, 12.969, 77.59)
+)
+
+private fun sampleChat(deviceId: String): List<Message> = listOf(
+    Message(from = deviceId, to = "you", text = "We are online", timestamp = System.currentTimeMillis() - 60 * 60 * 1000, owner = MessageOwner.Remote),
+    Message(from = "you", to = deviceId, text = "Share coords", timestamp = System.currentTimeMillis() - 55 * 60 * 1000, owner = MessageOwner.Local),
+    Message(from = deviceId, to = "you", text = "Lat/Lon updated", timestamp = System.currentTimeMillis() - 50 * 60 * 1000, owner = MessageOwner.Remote)
+)
+
+private fun formatRelativeTime(timestamp: Long): String {
+    val diff = (System.currentTimeMillis() - timestamp) / 1000
+    return when {
+        diff < 60 -> "just now"
+        diff < 3600 -> "${diff / 60}m ago"
+        diff < 86_400 -> "${diff / 3600}h ago"
+        else -> "${diff / 86_400}d ago"
+    }
+}
+
+private fun formatTime(timestamp: Long): String =
+    SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
+
+private fun formatSize(bytes: Long): String {
+    val kb = bytes / 1024.0
+    val mb = kb / 1024.0
+    return if (mb >= 1) "%.1f MB".format(mb) else "%.0f KB".format(kb)
+}
+
+@Preview(showBackground = true, widthDp = 420)
+@Composable
+private fun MobilePreview() {
+    ISRO_APPTheme {
+        IsroApp()
+    }
+}
