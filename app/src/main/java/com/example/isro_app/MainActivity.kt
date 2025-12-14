@@ -1,5 +1,16 @@
 package com.example.isro_app
 
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.runtime.collectAsState
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.runtime.collectAsState
+import com.example.isro_app.location.LocationState
+import androidx.compose.ui.platform.LocalContext
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -94,6 +105,10 @@ import com.example.isro_app.ui.theme.Surface
 import com.example.isro_app.ui.theme.SurfaceMuted
 import com.example.isro_app.ui.theme.TextPrimary
 import com.example.isro_app.ui.theme.TextSecondary
+import com.example.isro_app.mqtt.MqttManager
+import com.example.isro_app.mqtt.MqttConnectionState
+import android.widget.Toast
+import androidx.compose.material3.CircularProgressIndicator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -104,6 +119,10 @@ import java.util.UUID
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Initialize OSMDroid configuration
+        org.osmdroid.config.Configuration.getInstance().userAgentValue = packageName
+        
         enableEdgeToEdge()
         setContent {
             ISRO_APPTheme {
@@ -161,26 +180,141 @@ private data class Message(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun IsroApp() {
+    val locationViewModel: LocationViewModel = viewModel()
+    val locationState by locationViewModel.location.collectAsState()
+    val context = LocalContext.current
     val windowSize = rememberWindowSize()
-    val devices = remember { sampleDevices() }
-    var selectedDeviceId by rememberSaveable { mutableStateOf(devices.first().clientId) }
+    
+    // Create MQTT manager once (DO NOT call connect() here - it runs on main thread!)
+    val mqttManager = remember {
+        MqttManager() // No context needed anymore
+    }
+    
+    // Get MQTT connection state
+    val mqttState by mqttManager.connectionState.collectAsState()
+    
+    // Connect MQTT in background coroutine (NOT on main thread)
+    LaunchedEffect(Unit) {
+        mqttManager.connect()
+    }
+    
+    // Show toast if MQTT connection fails
+    LaunchedEffect(mqttState) {
+        if (mqttState == MqttConnectionState.Error) {
+            Toast.makeText(
+                context,
+                "MQTT server unreachable. Running in offline mode.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+    
+    // Get devices from MQTT and convert to Device list (with safe initial value)
+    val deviceLocations by mqttManager.devices.collectAsState(initial = emptyMap())
+    val devices = remember(deviceLocations) {
+        deviceLocations.values.map { location ->
+            Device(
+                clientId = location.deviceId,
+                displayName = location.deviceId, // Use deviceId as display name
+                ip = "192.168.10.${location.deviceId.hashCode() % 255}", // Generate IP from deviceId
+                status = if (System.currentTimeMillis() - location.lastSeen < 5 * 60 * 1000) {
+                    DeviceStatus.Online
+                } else {
+                    DeviceStatus.Offline
+                },
+                lastSeen = location.lastSeen,
+                lat = location.latitude,
+                lon = location.longitude
+            )
+        }
+    }
+    
+    var selectedDeviceId by rememberSaveable { 
+        mutableStateOf("")
+    }
+    
+    // Initialize selectedDeviceId when devices become available
+    LaunchedEffect(devices) {
+        if (selectedDeviceId.isBlank() && devices.isNotEmpty()) {
+            selectedDeviceId = devices.first().clientId
+        }
+    }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var sortBy by rememberSaveable { mutableStateOf(DeviceSort.NAME) }
     var isListCollapsed by rememberSaveable { mutableStateOf(false) }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-
-    val messagesPerDevice = remember {
-        mutableStateMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<Message>>().apply {
-            devices.forEach { device ->
-                put(
-                    device.clientId,
-                    androidx.compose.runtime.snapshots.SnapshotStateList<Message>().apply {
-                        addAll(sampleChat(device.clientId))
-                    }
-                )
+    val permissionLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            if (granted) {
+                locationViewModel.start()
             }
         }
+
+    LaunchedEffect(Unit) {
+        if (
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            locationViewModel.start()
+        } else {
+            permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    // Publish GPS when location updates
+    LaunchedEffect(locationState.hasFix, locationState.latitude, locationState.longitude, locationState.timestamp) {
+        if (locationState.hasFix && locationState.timestamp.isNotBlank()) {
+            mqttManager.publishGps(
+                locationState.latitude,
+                locationState.longitude,
+                locationState.timestamp
+            )
+        }
+    }
+
+    // Initialize message lists for all devices
+    val messagesPerDevice = remember {
+        mutableStateMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<Message>>()
+    }
+    
+    // Initialize message lists for all devices
+    LaunchedEffect(devices) {
+        devices.forEach { device ->
+            if (!messagesPerDevice.containsKey(device.clientId)) {
+                messagesPerDevice[device.clientId] = mutableStateListOf()
+            }
+        }
+    }
+    
+    // Get chat messages from MQTT and update messagesPerDevice (only incoming messages, not "you")
+    val mqttChatMessages by mqttManager.chatMessages.collectAsState()
+    LaunchedEffect(mqttChatMessages) {
+        // Only process incoming messages (not "you" messages, those are handled by sendMessage)
+        mqttChatMessages
+            .filter { it.from != "you" }
+            .forEach { chatMsg ->
+                val deviceId = chatMsg.from
+                if (deviceId.isNotBlank()) {
+                    val msgList = messagesPerDevice.getOrPut(deviceId) { mutableStateListOf() }
+                    val message = Message(
+                        from = chatMsg.from,
+                        to = "you",
+                        text = chatMsg.text,
+                        timestamp = chatMsg.timestamp,
+                        owner = MessageOwner.Remote,
+                        state = DeliveryState.Delivered
+                    )
+                    // Avoid duplicates
+                    if (msgList.none { it.timestamp == message.timestamp && it.text == message.text }) {
+                        msgList.add(message)
+                    }
+                }
+            }
     }
 
     val drafts = remember { mutableStateMapOf<String, String>() }
@@ -204,29 +338,35 @@ private fun IsroApp() {
 
     val sendMessage: (String, String?, Attachment?) -> Unit = sendMessage@{ text, _, attachment ->
         val deviceId = selectedDeviceId
-        val msgList = messagesPerDevice.getOrPut(deviceId) { mutableStateListOf() }
 
         if (text.isBlank() && attachment == null) {
             return@sendMessage
         }
 
-        val pending = Message(
-            from = "you",
-            to = deviceId,
-            text = text,
-            attachment = attachment,
-            timestamp = System.currentTimeMillis(),
-            owner = MessageOwner.Local,
-            state = DeliveryState.Pending
-        )
-
-        msgList.add(pending)
-
-        scope.launch {
-            delay(600)
-            val idx = msgList.indexOfFirst { it.id == pending.id }
-            if (idx >= 0) {
-                msgList[idx] = msgList[idx].copy(state = DeliveryState.Delivered)
+        // Add message to local state immediately
+        if (text.isNotBlank()) {
+            val msgList = messagesPerDevice.getOrPut(deviceId) { mutableStateListOf() }
+            val pending = Message(
+                from = "you",
+                to = deviceId,
+                text = text,
+                attachment = attachment,
+                timestamp = System.currentTimeMillis(),
+                owner = MessageOwner.Local,
+                state = DeliveryState.Pending
+            )
+            msgList.add(pending)
+            
+            // Send via MQTT
+            mqttManager.sendChat(deviceId, text)
+            
+            // Update to delivered after a short delay
+            scope.launch {
+                delay(600)
+                val idx = msgList.indexOfFirst { it.id == pending.id }
+                if (idx >= 0) {
+                    msgList[idx] = msgList[idx].copy(state = DeliveryState.Delivered)
+                }
             }
         }
     }
@@ -262,7 +402,10 @@ private fun IsroApp() {
                 CenterAlignedTopAppBar(
                     title = {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(text = stringResource(id = R.string.app_name), style = MaterialTheme.typography.headlineSmall)
+                            Text(
+                                text = "ISRO_APP",
+                                style = MaterialTheme.typography.headlineSmall
+                            )
                             Text(
                                 text = "Network: 192.168.1.0/24",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -341,6 +484,7 @@ private fun IsroApp() {
                             selectedDeviceId = it
                             scope.launch { drawerState.close() }
                         },
+                        locationState = locationState,
                         onFullMap = { /* full map hook */ }
                     )
 
@@ -368,7 +512,9 @@ private fun IsroApp() {
                             sendMessage(text, null, attachment)
                             drafts[selectedDeviceId] = ""
                             attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }.clear()
-                        }
+                        },
+                        locationState = locationState,
+                        onFullMap = { /* full map hook */ }
                     )
 
                     WindowSize.Expanded -> ExpandedLayout(
@@ -393,8 +539,15 @@ private fun IsroApp() {
                             sendMessage(text, null, attachment)
                             drafts[selectedDeviceId] = ""
                             attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }.clear()
-                        }
+                        },
+                        locationState = locationState,
+                        onFullMap = { /* full map hook */ }
                     )
+                }
+                
+                // Show MQTT connecting overlay
+                if (mqttState == MqttConnectionState.Connecting) {
+                    MqttConnectingOverlay()
                 }
             }
         }
@@ -526,6 +679,7 @@ private fun MobileLayout(
     onAddAttachment: (Attachment) -> Unit,
     onRemoveAttachment: (Attachment) -> Unit,
     onSelectDevice: (String) -> Unit,
+    locationState: LocationState,
     onFullMap: () -> Unit
 ) {
     Column(
@@ -534,12 +688,19 @@ private fun MobileLayout(
             .background(SurfaceMuted),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        selectedDevice?.let {
-            MapCard(
-                device = it,
-                onFullScreen = onFullMap
-            )
-        }
+        MapCard(
+            device = selectedDevice ?: Device(
+                clientId = "local",
+                displayName = "You",
+                ip = "local",
+                status = DeviceStatus.Online,
+                lastSeen = System.currentTimeMillis(),
+                lat = if (locationState.hasFix) locationState.latitude else 0.0,
+                lon = if (locationState.hasFix) locationState.longitude else 0.0
+            ),
+            locationState = locationState,
+            onFullScreen = onFullMap
+        )
         ChatPane(
             device = selectedDevice,
             messages = messages,
@@ -571,7 +732,9 @@ private fun MediumLayout(
     attachments: List<Attachment>,
     onAddAttachment: (Attachment) -> Unit,
     onRemoveAttachment: (Attachment) -> Unit,
-    onSend: (String, Attachment?) -> Unit
+    onSend: (String, Attachment?) -> Unit,
+    locationState: LocationState,
+    onFullMap: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -599,7 +762,19 @@ private fun MediumLayout(
                 .fillMaxHeight(),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            selectedDevice?.let { MapCard(device = it, onFullScreen = onCollapseToggle) }
+            MapCard(
+                device = selectedDevice ?: Device(
+                    clientId = "local",
+                    displayName = "You",
+                    ip = "local",
+                    status = DeviceStatus.Online,
+                    lastSeen = System.currentTimeMillis(),
+                    lat = if (locationState.hasFix) locationState.latitude else 0.0,
+                    lon = if (locationState.hasFix) locationState.longitude else 0.0
+                ),
+                locationState = locationState,
+                onFullScreen = onFullMap
+            )
             ChatPane(
                 device = selectedDevice,
                 messages = messages,
@@ -630,7 +805,9 @@ private fun ExpandedLayout(
     attachments: List<Attachment>,
     onAddAttachment: (Attachment) -> Unit,
     onRemoveAttachment: (Attachment) -> Unit,
-    onSend: (String, Attachment?) -> Unit
+    onSend: (String, Attachment?) -> Unit,
+    locationState: LocationState,
+    onFullMap: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -656,7 +833,11 @@ private fun ExpandedLayout(
                 .fillMaxHeight(),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            selectedDevice?.let { MapCard(device = it, onFullScreen = {}) }
+            selectedDevice?.let { MapCard(
+                device = it,
+                locationState = locationState,
+                onFullScreen = onFullMap
+            ) }
         }
         ChatPane(
             device = selectedDevice,
@@ -712,9 +893,6 @@ private fun CoordinatesCard(device: Device) {
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Selected Device Coordinates", style = MaterialTheme.typography.headlineSmall)
-            Text("Lat: ${"%.7f".format(device.lat)}", style = MaterialTheme.typography.bodyLarge)
-            Text("Lon: ${"%.7f".format(device.lon)}", style = MaterialTheme.typography.bodyLarge)
             Text("Last update: ${formatTime(device.lastSeen)}", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val clipboard: ClipboardManager = LocalClipboardManager.current
@@ -736,62 +914,72 @@ private fun CoordinatesCard(device: Device) {
 }
 
 @Composable
-private fun MapCard(device: Device, onFullScreen: () -> Unit) {
+private fun MapCard(
+    device: Device,
+    locationState: LocationState,
+    onFullScreen: () -> Unit
+){
     ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp)
-            .height(220.dp),
+            .padding(horizontal = 8.dp)   // ⬅ less padding
+            .height(360.dp),              // ⬅ bigger map
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        listOf(PrimaryBlue.copy(alpha = 0.15f), Surface)
-                    )
-                )
-        ) {
-    Text(
-                text = "Map placeholder (bind Mapbox/Google Maps later)",
+        Box(modifier = Modifier.fillMaxSize()) {
+
+            // 🔥 REAL OFFLINE MAP
+            OfflineMapView(
+                latitude = if (locationState.hasFix) locationState.latitude else device.lat,
+                longitude = if (locationState.hasFix) locationState.longitude else device.lon,
+                modifier = Modifier.fillMaxSize()
+            )
+
+            // 📍 Coordinate overlay (top-left)
+            Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(12.dp),
-                color = TextSecondary
-            )
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                    .padding(12.dp)
+                    .background(
+                        Color.Black.copy(alpha = 0.6f),
+                        RoundedCornerShape(8.dp)
+                    )
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
             ) {
-                Text(device.displayName, fontWeight = FontWeight.Bold)
-                Text("${device.lat}, ${device.lon}", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                Text(
+                    text = if (locationState.hasFix)
+                        "Lat: ${"%.5f".format(locationState.latitude)}\n" +
+                                "Lon: ${"%.5f".format(locationState.longitude)}"
+                    else
+                        "Waiting for GPS…",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodySmall
+                )
+
             }
-            Row(
+
+            // ℹ️ Fullscreen / info button (optional)
+            IconButton(
+                onClick = onFullScreen,
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+                    .background(
+                        MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                        CircleShape
+                    )
             ) {
-                IconButton(onClick = { /* zoom out hook */ }) {
-                    Icon(Icons.Default.ZoomOut, contentDescription = "Zoom out")
-                }
-                IconButton(onClick = { /* zoom in hook */ }) {
-                    Icon(Icons.Default.ZoomIn, contentDescription = "Zoom in")
-                }
-                IconButton(onClick = { /* locate me hook */ }) {
-                    Icon(Icons.Default.MyLocation, contentDescription = "Locate me")
-                }
-                IconButton(onClick = onFullScreen) {
-                    Icon(Icons.Default.Info, contentDescription = "Toggle fullscreen")
-                }
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = "Map info"
+                )
             }
         }
     }
 }
+
+
 
 @Composable
 private fun ChatPane(
@@ -1022,6 +1210,35 @@ private fun formatSize(bytes: Long): String {
     val kb = bytes / 1024.0
     val mb = kb / 1024.0
     return if (mb >= 1) "%.1f MB".format(mb) else "%.0f KB".format(kb)
+}
+
+@Composable
+private fun MqttConnectingOverlay() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.4f)),
+        contentAlignment = Alignment.Center
+    ) {
+        ElevatedCard(
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.padding(24.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                CircularProgressIndicator()
+                Text("Connecting to MQTT server…")
+                Text(
+                    "Please wait",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary
+                )
+            }
+        }
+    }
 }
 
 @Preview(showBackground = true, widthDp = 420)
