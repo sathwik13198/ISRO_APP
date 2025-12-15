@@ -2,6 +2,8 @@ package com.example.isro_app
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.foundation.background
@@ -19,10 +21,15 @@ import org.osmdroid.views.overlay.Marker
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import java.io.File
 
+data class MapDevice(
+    val id: String,
+    val latitude: Double,
+    val longitude: Double
+)
+
 @Composable
 fun OfflineMapView(
-    latitude: Double,
-    longitude: Double,
+    devices: List<MapDevice>,
     modifier: Modifier = Modifier
 ) {
     val isPreview = LocalInspectionMode.current
@@ -38,6 +45,8 @@ fun OfflineMapView(
         }
         return
     }
+
+    val markerMap = remember { mutableStateMapOf<String, Marker>() }
 
     AndroidView(
         modifier = modifier,
@@ -72,13 +81,33 @@ fun OfflineMapView(
 
                 setMultiTouchControls(true)
 
-                controller.setZoom(11.0)
-                controller.setCenter(GeoPoint(latitude, longitude))
+                // Initial camera position – center on first device if available
+                val first = devices.firstOrNull()
+                if (first != null) {
+                    controller.setZoom(11.0)
+                    controller.setCenter(GeoPoint(first.latitude, first.longitude))
 
-                val marker = Marker(this)
-                marker.position = GeoPoint(latitude, longitude)
-                marker.title = "Device Location"
-                overlays.add(marker)
+                    // Also ensure at least one marker exists on first render
+                    addOrUpdateMarker(
+                        id = first.id,
+                        lat = first.latitude,
+                        lon = first.longitude,
+                        map = this,
+                        markerMap = markerMap
+                    )
+                }
+            }
+        },
+        update = { mapView ->
+            // Update or create markers for all devices without clearing the map
+            devices.forEach { device ->
+                addOrUpdateMarker(
+                    id = device.id,
+                    lat = device.latitude,
+                    lon = device.longitude,
+                    map = mapView,
+                    markerMap = markerMap
+                )
             }
         }
     )
@@ -86,4 +115,27 @@ fun OfflineMapView(
     DisposableEffect(Unit) {
         onDispose { }
     }
+}
+
+fun addOrUpdateMarker(
+    id: String,
+    lat: Double,
+    lon: Double,
+    map: MapView,
+    markerMap: MutableMap<String, Marker>
+) {
+    val position = GeoPoint(lat, lon)
+
+    if (markerMap.containsKey(id)) {
+        markerMap[id]?.position = position
+    } else {
+        val marker = Marker(map).apply {
+            this.position = position
+            this.title = id
+        }
+        map.overlays.add(marker)
+        markerMap[id] = marker
+    }
+
+    map.invalidate()
 }

@@ -36,15 +36,15 @@ data class ChatMessage(
 
 // -------- MQTT MANAGER --------
 
-class MqttManager {
+class MqttManager(
+    private val myId: String // <-- VERY IMPORTANT (android1 / android2)
+) {
 
-    private val brokerUri = "tcp://192.168.10.100:1883"
-    private val clientId = "android_${System.currentTimeMillis()}"
-    private val username = "piuser"
-    private val password = "1234"
+    private val brokerUri = "tcp://192.168.29.239:1883"
 
+    private val clientId = myId
     private val gpsTopic = "gps/location"
-    private val inboxTopic = "android1/inbox" // Keep original inbox topic format
+    private val inboxTopic = "$myId/inbox"
 
     private lateinit var mqttClient: MqttClient
 
@@ -67,24 +67,19 @@ class MqttManager {
             try {
                 _connectionState.value = MqttConnectionState.Connecting
 
-                // Create MqttClient (NOT MqttAndroidClient - avoids LocalBroadcastManager crash)
                 if (!::mqttClient.isInitialized) {
                     mqttClient = MqttClient(brokerUri, clientId, null)
                 }
 
                 val options = MqttConnectOptions().apply {
                     isCleanSession = true
-                    userName = username
-                    password = this@MqttManager.password.toCharArray()
                     connectionTimeout = 10
                     keepAliveInterval = 60
                     isAutomaticReconnect = true
                 }
 
-                // Set callback before connecting
                 mqttClient.setCallback(object : MqttCallback {
                     override fun connectionLost(cause: Throwable?) {
-                        cause?.printStackTrace()
                         _connectionState.value = MqttConnectionState.Error
                     }
 
@@ -98,22 +93,17 @@ class MqttManager {
                         }
                     }
 
-                    override fun deliveryComplete(token: IMqttDeliveryToken?) {
-                        // Message delivery complete
-                    }
+                    override fun deliveryComplete(token: IMqttDeliveryToken?) {}
                 })
 
-                // Connect synchronously (runs in background coroutine)
-                if (!mqttClient.isConnected) {
-                    mqttClient.connect(options)
-                }
+                mqttClient.connect(options)
 
-                // Subscribe after successful connection
                 mqttClient.subscribe(gpsTopic, 1)
                 mqttClient.subscribe(inboxTopic, 1)
 
                 _connectionState.value = MqttConnectionState.Connected
-                Log.d("MQTT", "Connected")
+                Log.d("MQTT", "Connected as $clientId")
+
             } catch (e: Exception) {
                 Log.e("MQTT", "Connection failed", e)
                 _connectionState.value = MqttConnectionState.Error
@@ -135,6 +125,8 @@ class MqttManager {
                 timestamp = json.getString("timestamp")
             )
 
+            Log.d("MQTT", "GPS from ${location.deviceId}")
+
             _devices.value = _devices.value.toMutableMap().apply {
                 put(id, location)
             }
@@ -143,19 +135,20 @@ class MqttManager {
 
     fun publishGps(lat: Double, lon: Double, timestamp: String) {
         try {
-            if (::mqttClient.isInitialized && mqttClient.isConnected) {
+            if (mqttClient.isConnected) {
                 val json = JSONObject().apply {
-                    put("sender_id", "android1") // Use original client ID for sender
+                    put("sender_id", myId)
                     put("latitude", lat)
                     put("longitude", lon)
                     put("timestamp", timestamp)
                 }
 
-                val message = MqttMessage(json.toString().toByteArray())
-                message.qos = 1
-                message.isRetained = false
-
-                mqttClient.publish(gpsTopic, message)
+                mqttClient.publish(
+                    gpsTopic,
+                    MqttMessage(json.toString().toByteArray()).apply {
+                        qos = 1
+                    }
+                )
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -177,13 +170,15 @@ class MqttManager {
 
     fun sendChat(peerId: String, text: String) {
         try {
-            if (::mqttClient.isInitialized && mqttClient.isConnected) {
-                val msg = "android1: $text" // Use original client ID format
-                val message = MqttMessage(msg.toByteArray())
-                message.qos = 1
-                message.isRetained = false
+            if (mqttClient.isConnected) {
+                val msg = "$myId: $text"
 
-                mqttClient.publish("$peerId/inbox", message)
+                mqttClient.publish(
+                    "$peerId/inbox",
+                    MqttMessage(msg.toByteArray()).apply {
+                        qos = 1
+                    }
+                )
 
                 _chatMessages.value =
                     _chatMessages.value + ChatMessage("you", text)

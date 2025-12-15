@@ -107,6 +107,7 @@ import com.example.isro_app.ui.theme.TextPrimary
 import com.example.isro_app.ui.theme.TextSecondary
 import com.example.isro_app.mqtt.MqttManager
 import com.example.isro_app.mqtt.MqttConnectionState
+import com.example.isro_app.MapDevice
 import android.widget.Toast
 import androidx.compose.material3.CircularProgressIndicator
 import kotlinx.coroutines.delay
@@ -119,14 +120,17 @@ import java.util.UUID
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
         // Initialize OSMDroid configuration
         org.osmdroid.config.Configuration.getInstance().userAgentValue = packageName
-        
+
+        // Get the single, app-wide MQTT manager from MyApplication
+        val mqttManager = (application as MyApplication).mqttManager
+
         enableEdgeToEdge()
         setContent {
             ISRO_APPTheme {
-                IsroApp()
+                IsroApp(mqttManager = mqttManager)
             }
         }
     }
@@ -179,25 +183,17 @@ private data class Message(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun IsroApp() {
+private fun IsroApp(
+    mqttManager: MqttManager
+) {
     val locationViewModel: LocationViewModel = viewModel()
     val locationState by locationViewModel.location.collectAsState()
     val context = LocalContext.current
     val windowSize = rememberWindowSize()
-    
-    // Create MQTT manager once (DO NOT call connect() here - it runs on main thread!)
-    val mqttManager = remember {
-        MqttManager() // No context needed anymore
-    }
-    
-    // Get MQTT connection state
+
+    // Get MQTT connection state from app-wide manager
     val mqttState by mqttManager.connectionState.collectAsState()
-    
-    // Connect MQTT in background coroutine (NOT on main thread)
-    LaunchedEffect(Unit) {
-        mqttManager.connect()
-    }
-    
+
     // Show toast if MQTT connection fails
     LaunchedEffect(mqttState) {
         if (mqttState == MqttConnectionState.Error) {
@@ -689,15 +685,7 @@ private fun MobileLayout(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         MapCard(
-            device = selectedDevice ?: Device(
-                clientId = "local",
-                displayName = "You",
-                ip = "local",
-                status = DeviceStatus.Online,
-                lastSeen = System.currentTimeMillis(),
-                lat = if (locationState.hasFix) locationState.latitude else 0.0,
-                lon = if (locationState.hasFix) locationState.longitude else 0.0
-            ),
+            devices = devices,
             locationState = locationState,
             onFullScreen = onFullMap
         )
@@ -763,15 +751,7 @@ private fun MediumLayout(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             MapCard(
-                device = selectedDevice ?: Device(
-                    clientId = "local",
-                    displayName = "You",
-                    ip = "local",
-                    status = DeviceStatus.Online,
-                    lastSeen = System.currentTimeMillis(),
-                    lat = if (locationState.hasFix) locationState.latitude else 0.0,
-                    lon = if (locationState.hasFix) locationState.longitude else 0.0
-                ),
+                devices = devices,
                 locationState = locationState,
                 onFullScreen = onFullMap
             )
@@ -833,11 +813,11 @@ private fun ExpandedLayout(
                 .fillMaxHeight(),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            selectedDevice?.let { MapCard(
-                device = it,
+            MapCard(
+                devices = devices,
                 locationState = locationState,
                 onFullScreen = onFullMap
-            ) }
+            )
         }
         ChatPane(
             device = selectedDevice,
@@ -915,7 +895,7 @@ private fun CoordinatesCard(device: Device) {
 
 @Composable
 private fun MapCard(
-    device: Device,
+    devices: List<Device>,
     locationState: LocationState,
     onFullScreen: () -> Unit
 ){
@@ -931,8 +911,13 @@ private fun MapCard(
 
             // 🔥 REAL OFFLINE MAP
             OfflineMapView(
-                latitude = if (locationState.hasFix) locationState.latitude else device.lat,
-                longitude = if (locationState.hasFix) locationState.longitude else device.lon,
+                devices = devices.map { device ->
+                    MapDevice(
+                        id = device.clientId,
+                        latitude = device.lat,
+                        longitude = device.lon
+                    )
+                },
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -1245,6 +1230,9 @@ private fun MqttConnectingOverlay() {
 @Composable
 private fun MobilePreview() {
     ISRO_APPTheme {
-        IsroApp()
+        // Preview uses a local MqttManager instance without connecting.
+        // This keeps the UI happy without doing real network work.
+        val previewMqttManager = MqttManager(myId = "preview")
+        IsroApp(mqttManager = previewMqttManager)
     }
 }
