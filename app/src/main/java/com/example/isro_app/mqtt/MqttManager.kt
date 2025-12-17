@@ -37,7 +37,7 @@ data class ChatMessage(
 // -------- MQTT MANAGER --------
 
 class MqttManager(
-    private val myId: String // <-- VERY IMPORTANT (android1 / android2)
+    val myId: String // <-- VERY IMPORTANT (android1 / android2)
 ) {
 
     private val brokerUri = "tcp://192.168.29.239:1883"

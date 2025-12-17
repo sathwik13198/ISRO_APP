@@ -7,13 +7,24 @@ A modern Android application for real-time device tracking, GPS monitoring, and 
 ### Core Functionality
 - **Real-time GPS Tracking**: Continuous location monitoring with high accuracy
 - **MQTT Communication**: Real-time device discovery and messaging via MQTT protocol
-- **Offline Maps**: Full offline map support using OSMDroid with MBTiles
+- **LAN-Based Map Tiles**: Custom tile server for offline/private network map rendering
+- **Interactive Maps**: Full-screen map mode with pan, zoom, and follow controls
 - **Multi-Device Support**: Track and communicate with multiple devices on a network
 - **Chat System**: Real-time messaging between devices
 - **Responsive UI**: Adaptive layouts for mobile, tablet, and desktop screens
 
+### Map Features ✨
+- **LAN Tile Server**: Fetch map tiles from local network server (no internet required)
+- **Custom Marker Icons**: Distinct markers for self (red) and other devices (blue)
+- **Follow Mode**: Auto-center map on GPS location with manual toggle
+- **Pan Mode**: Free drag navigation without auto-centering
+- **Fullscreen Map**: Immersive map view with floating controls
+- **Zoom Controls**: Manual zoom in/out buttons
+- **GPS Fallback**: Shows GPS marker when MQTT is disconnected
+
 ### Key Highlights
 - ✅ **Offline-First**: Maps and GPS work without internet connection
+- ✅ **Private Network**: LAN tile server for secure, local map tiles
 - ✅ **Non-Blocking UI**: MQTT connection runs in background, never freezes the app
 - ✅ **Error Resilient**: Graceful handling of MQTT connection failures
 - ✅ **Modern Architecture**: Built with Jetpack Compose, MVVM pattern, and Kotlin Coroutines
@@ -24,6 +35,7 @@ A modern Android application for real-time device tracking, GPS monitoring, and 
 - **Java**: Version 11
 - **Kotlin**: Latest stable version
 - **Android Studio**: Hedgehog or later recommended
+- **Python 3**: For running the tile server (if using LAN tiles)
 
 ## 🛠️ Setup Instructions
 
@@ -48,7 +60,133 @@ private val username = "your_username"              // Change this
 private val password = "your_password"              // Change this
 ```
 
-### 4. Build and Run
+### 4. Set Up Tile Server (For LAN Maps)
+
+#### 4.1. Prepare Tile Directory Structure
+Create a directory structure for your map tiles:
+
+```
+your_tiles_directory/
+├── tile_server.py          # Tile server script (copy from below)
+└── tiles/                  # Map tiles folder
+    ├── 0/
+    │   ├── 0/
+    │   │   └── 0.png
+    │   └── 1/
+    │       └── 0.png
+    ├── 1/
+    │   └── ...
+    └── ...
+```
+
+**Important**: The `tile_server.py` file must be placed **in the same directory** as the `tiles/` folder.
+
+#### 4.2. Create Tile Server Script
+Create `tile_server.py` in your tiles directory:
+
+```python
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import os
+from datetime import datetime
+
+PORT = 8080
+MIN_ZOOM = 0
+MAX_ZOOM = 14
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TILES_DIR = os.path.join(BASE_DIR, "tiles")
+
+
+def log(message):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
+
+
+class TileHandler(SimpleHTTPRequestHandler):
+
+    def do_GET(self):
+        # Expected path: /tiles/z/x/y.png
+        if not self.path.startswith("/tiles/"):
+            log(f"INVALID PATH → {self.path}")
+            self.send_error(404)
+            return
+
+        log(f"REQUEST → {self.path}")
+
+        try:
+            _, z, x, y_png = self.path.strip("/").split("/")
+            y = y_png.replace(".png", "")
+            z = int(z)
+            x = int(x)
+            y = int(y)
+        except Exception:
+            log("ERROR → INVALID TILE FORMAT")
+            self.send_error(400, "Invalid tile format")
+            return
+
+        # Zoom validation
+        if z < MIN_ZOOM or z > MAX_ZOOM:
+            log(f"REJECTED → ZOOM OUT OF RANGE ({z}) ❌")
+            self.send_error(404, "Zoom level not supported")
+            return
+
+        tile_path = os.path.join(TILES_DIR, str(z), str(x), f"{y}.png")
+
+        log(f"CHECKING → {tile_path}")
+
+        if os.path.isfile(tile_path):
+            log("STATUS → TILE EXISTS ✅")
+
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.end_headers()
+
+            with open(tile_path, "rb") as f:
+                self.wfile.write(f.read())
+        else:
+            log("STATUS → TILE NOT FOUND ❌")
+            self.send_error(404, "Tile not found")
+
+
+if __name__ == "__main__":
+    os.chdir(BASE_DIR)
+
+    log("======================================")
+    log("TILE SERVER STARTED")
+    log(f"PORT       → {PORT}")
+    log(f"ZOOM RANGE → {MIN_ZOOM} to {MAX_ZOOM}")
+    log(f"TILES DIR  → {TILES_DIR}")
+    log("======================================")
+
+    server = HTTPServer(("0.0.0.0", PORT), TileHandler)
+    server.serve_forever()
+```
+
+#### 4.3. Start the Tile Server
+```bash
+cd your_tiles_directory
+python3 tile_server.py
+```
+
+The server will start on port 8080 and serve tiles from the `tiles/` directory.
+
+#### 4.4. Configure Tile Server IP in App
+Edit `app/src/main/java/com/example/isro_app/OfflineMapComposable.kt`:
+
+```kotlin
+private val LanTileSource = XYTileSource(
+    "LAN-TILES",
+    0,          // min zoom
+    14,         // max zoom
+    256,        // tile size
+    ".png",
+    arrayOf("http://YOUR_SERVER_IP:8080/tiles/")  // Change this IP
+)
+```
+
+Replace `YOUR_SERVER_IP` with the IP address of the machine running the tile server (e.g., `192.168.29.242`).
+
+### 5. Build and Run
 ```bash
 ./gradlew assembleDebug
 ```
@@ -83,7 +221,7 @@ app/src/main/java/com/example/isro_app/
 ├── MainActivity.kt          # Main UI and navigation
 ├── LocationViewModel.kt      # GPS location management
 ├── MyApplication.kt          # Application initialization
-├── OfflineMapComposable.kt  # Map rendering component
+├── OfflineMapComposable.kt  # Map rendering component (LAN tiles + controls)
 ├── location/
 │   └── LocationState.kt    # Location data model
 └── mqtt/
@@ -108,7 +246,14 @@ app/src/main/java/com/example/isro_app/
 - Main UI composable
 - Responsive layouts (Mobile/Tablet/Desktop)
 - Device list and chat interface
-- Map integration
+- Map integration with fullscreen mode
+
+#### OfflineMapComposable
+- Renders map with LAN tile server
+- Manages marker display (self vs others)
+- Handles follow/pan mode toggles
+- Provides zoom controls
+- GPS fallback marker logic
 
 ## 🔧 Configuration
 
@@ -120,9 +265,16 @@ Default configuration in `MqttManager.kt`:
   - GPS: `gps/location`
   - Inbox: `{clientId}/inbox`
 
+### Tile Server Settings
+Default configuration in `OfflineMapComposable.kt`:
+- **Server URL**: `http://192.168.29.242:8080/tiles/`
+- **Port**: 8080
+- **Zoom Range**: 0 to 14
+- **Tile Format**: PNG (256x256)
+
 ### Permissions
 Required permissions (already configured in `AndroidManifest.xml`):
-- `INTERNET`: MQTT communication
+- `INTERNET`: MQTT communication and tile fetching
 - `ACCESS_NETWORK_STATE`: Network status checking
 - `ACCESS_FINE_LOCATION`: GPS tracking
 - `ACCESS_COARSE_LOCATION`: Approximate location
@@ -137,8 +289,9 @@ OSMDroid is initialized in:
 
 ### Initial Setup
 1. **Grant Permissions**: App will request location permissions on first launch
-2. **MQTT Connection**: App automatically connects to MQTT broker
-3. **GPS Tracking**: Location tracking starts automatically
+2. **Start Tile Server**: Ensure tile server is running on your network (if using LAN tiles)
+3. **MQTT Connection**: App automatically connects to MQTT broker
+4. **GPS Tracking**: Location tracking starts automatically
 
 ### Features Usage
 
@@ -148,9 +301,17 @@ OSMDroid is initialized in:
 - Status indicators show online/offline state
 
 #### GPS Tracking
-- Current location is displayed on the map
+- Current location is displayed on the map with red marker (self)
+- Other devices shown with blue markers
 - GPS coordinates are published to MQTT every update
 - Map centers on your current location when GPS fix is available
+
+#### Map Controls
+- **🎯 Follow Mode**: Tap to enable auto-center on GPS location
+- **🖐️ Pan Mode**: Tap to disable auto-center and allow free dragging
+- **➕/➖ Zoom**: Manual zoom in/out buttons
+- **⛶ Fullscreen**: Tap fullscreen icon to view map in fullscreen mode
+- **⬅ Back**: Exit fullscreen mode
 
 #### Chat
 - Select a device from the list
@@ -158,10 +319,43 @@ OSMDroid is initialized in:
 - Messages are delivered via MQTT
 
 #### Maps
-- Map always displays (even without MQTT)
-- Uses current GPS location by default
+- Map fetches tiles from LAN server (configured IP)
+- Works offline if tiles are cached
 - Shows device locations when available
-- Fully offline-capable
+- Distinct markers: Red (self), Blue (others)
+
+## 🗺️ Tile Server Details
+
+### Directory Structure
+```
+tiles_directory/
+├── tile_server.py          # Server script (MUST be here)
+└── tiles/                  # Map tiles (standard TMS structure)
+    ├── {zoom_level}/
+    │   ├── {tile_x}/
+    │   │   └── {tile_y}.png
+    │   └── ...
+    └── ...
+```
+
+### Tile Naming Convention
+Tiles follow the **TMS (Tile Map Service)** format:
+- Path: `/tiles/{z}/{x}/{y}.png`
+- `z`: Zoom level (0-14)
+- `x`: Tile X coordinate
+- `y`: Tile Y coordinate
+
+### Server Requirements
+- Python 3.x
+- HTTP server capability (uses standard library)
+- Network access from Android devices
+- Tiles directory with proper structure
+
+### Network Configuration
+- Server listens on `0.0.0.0:8080` (all interfaces)
+- Ensure firewall allows port 8080
+- Android devices must be on same network
+- Update IP in `OfflineMapComposable.kt` to match server IP
 
 ## 🐛 Troubleshooting
 
@@ -194,9 +388,38 @@ OSMDroid is initialized in:
 
 **Problem**: Black screen or map not loading
 - **Solution**: 
-  - Ensure OSMDroid is initialized (check MyApplication)
-  - Verify storage permissions for map tiles
-  - Check if MBTiles file is present (if using offline tiles)
+  - Ensure tile server is running
+  - Check tile server IP address in `OfflineMapComposable.kt`
+  - Verify network connectivity between device and tile server
+  - Check tile server logs for errors
+  - Ensure tiles directory structure is correct
+
+**Problem**: Tiles not displaying
+- **Solution**:
+  - Verify tile server is accessible from device (ping server IP)
+  - Check tile server is serving on correct port (8080)
+  - Ensure tile files exist in `tiles/{z}/{x}/{y}.png` format
+  - Check tile server console for request logs
+
+**Problem**: Map shows wrong location or no markers
+- **Solution**:
+  - Verify GPS permissions are granted
+  - Check if MQTT is connected (for device markers)
+  - Ensure device IDs match between MQTT and app
+
+### Tile Server Issues
+
+**Problem**: Server won't start
+- **Solution**:
+  - Check if port 8080 is already in use
+  - Verify Python 3 is installed
+  - Ensure `tile_server.py` is in correct directory (same as `tiles/` folder)
+
+**Problem**: Server starts but no tiles served
+- **Solution**:
+  - Verify `tiles/` directory exists and contains subdirectories
+  - Check tile file paths match expected format
+  - Review server console logs for request details
 
 ### Build Issues
 
@@ -214,31 +437,52 @@ OSMDroid is initialized in:
 - MQTT credentials are hardcoded in `MqttManager.kt` (change for production)
 - Consider using secure MQTT (TLS/SSL) for production deployments
 - Location data is transmitted via MQTT - ensure broker security
+- Tile server runs on local network - configure firewall appropriately
+- No authentication on tile server (acceptable for LAN use, add auth for production)
 
 ## 🚧 Known Limitations
 
 - MQTT broker IP is hardcoded (should be configurable)
+- Tile server IP is hardcoded (should be configurable)
 - No message encryption (plain text MQTT)
-- Map tiles require manual setup for offline use
+- Tile server has no authentication (LAN-only use)
 - Device list doesn't persist across app restarts
+- Map tiles require manual setup with proper directory structure
 
 ## 🔮 Future Enhancements
 
 - [ ] Configurable MQTT broker settings (UI)
+- [ ] Configurable tile server URL (UI)
 - [ ] Message encryption
 - [ ] Persistent device list
-- [ ] Map tile downloader
+- [ ] Map tile downloader/integrator
 - [ ] Route tracking and history
 - [ ] Push notifications for messages
 - [ ] Multi-broker support
+- [ ] Tile server authentication
+- [ ] Offline tile caching improvements
 
+## 📝 Notes
+
+### Marker Colors
+- **Red Marker** (#ff0a0a): Your device (self)
+- **Blue Marker** (#1b0aff): Other devices on network
+
+### Map Behavior
+- **Follow Mode ON**: Map automatically centers on your GPS location
+- **Follow Mode OFF**: Map allows free panning without auto-center
+- Dragging the map automatically disables follow mode
+- GPS marker only shows when MQTT is disconnected (fallback)
+- MQTT marker for self takes priority over GPS marker
 
 ## 🙏 Acknowledgments
 
 - **OSMDroid**: Offline mapping library
 - **Eclipse Paho**: MQTT client library
 - **Jetpack Compose**: Modern Android UI toolkit
+- **Python Standard Library**: HTTP server for tile delivery
 
 ---
 
-
+**Version**: 1.0.0  
+**Last Updated**: 17/12/2025

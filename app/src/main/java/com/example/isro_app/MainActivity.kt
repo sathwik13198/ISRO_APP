@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MyLocation
@@ -112,6 +113,7 @@ import android.widget.Toast
 import androidx.compose.material3.CircularProgressIndicator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -120,13 +122,14 @@ import java.util.UUID
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Initialize OSMDroid configuration
-        org.osmdroid.config.Configuration.getInstance().userAgentValue = packageName
-
-        // Get the single, app-wide MQTT manager from MyApplication
+    
+        val config = org.osmdroid.config.Configuration.getInstance()
+        config.userAgentValue = packageName
+        config.osmdroidBasePath = filesDir
+        config.osmdroidTileCache = File(filesDir, "osmdroid")
+    
         val mqttManager = (application as MyApplication).mqttManager
-
+    
         enableEdgeToEdge()
         setContent {
             ISRO_APPTheme {
@@ -134,6 +137,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    
 }
 
 private enum class WindowSize { Compact, Medium, Expanded }
@@ -224,6 +228,10 @@ private fun IsroApp(
             )
         }
     }
+
+    val myDeviceId = mqttManager.myId
+    
+    var isMapFullscreen by rememberSaveable { mutableStateOf(false) }
     
     var selectedDeviceId by rememberSaveable { 
         mutableStateOf("")
@@ -451,99 +459,136 @@ private fun IsroApp(
                 )
             }
         ) { paddingValues ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-            ) {
-                when (windowSize) {
-                    WindowSize.Compact -> MobileLayout(
-                        devices = filtered,
-                        selectedDevice = selectedDevice,
-                        messages = messagesPerDevice[selectedDeviceId].orEmpty(),
-                        onMessageSend = { text, attachment ->
-                            sendMessage(text, null, attachment)
-                            drafts[selectedDeviceId] = ""
-                            attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }.clear()
+            if (isMapFullscreen) {
+                // 🔥 FULLSCREEN MAP ONLY
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(paddingValues)
+                ) {
+                    OfflineMapView(
+                        devices = filtered.map {
+                            MapDevice(it.clientId, it.lat, it.lon)
                         },
-                        draft = drafts[selectedDeviceId].orEmpty(),
-                        onDraftChange = { drafts[selectedDeviceId] = it },
-                        selectedAttachments = attachments[selectedDeviceId].orEmpty(),
-                        onAddAttachment = {
-                            val list = attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }
-                            list.add(it)
-                        },
-                        onRemoveAttachment = { att ->
-                            attachments[selectedDeviceId]?.remove(att)
-                        },
-                        onSelectDevice = {
-                            selectedDeviceId = it
-                            scope.launch { drawerState.close() }
-                        },
-                        locationState = locationState,
-                        onFullMap = { /* full map hook */ }
+                        currentLocation = locationState,
+                        myDeviceId = myDeviceId,
+                        modifier = Modifier.fillMaxSize()
                     )
 
-                    WindowSize.Medium -> MediumLayout(
-                        devices = filtered,
-                        selectedDeviceId = selectedDeviceId,
-                        onSelectDevice = { selectedDeviceId = it },
-                        isCollapsed = isListCollapsed,
-                        onCollapseToggle = { isListCollapsed = !isListCollapsed },
-                        searchQuery = searchQuery,
-                        onSearch = { searchQuery = it },
-                        sortBy = sortBy,
-                        onSortChange = { sortBy = it },
-                        selectedDevice = selectedDevice,
-                        messages = messagesPerDevice[selectedDeviceId].orEmpty(),
-                        draft = drafts[selectedDeviceId].orEmpty(),
-                        onDraftChange = { drafts[selectedDeviceId] = it },
-                        attachments = attachments[selectedDeviceId].orEmpty(),
-                        onAddAttachment = { att ->
-                            val list = attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }
-                            list.add(att)
-                        },
-                        onRemoveAttachment = { att -> attachments[selectedDeviceId]?.remove(att) },
-                        onSend = { text, attachment ->
-                            sendMessage(text, null, attachment)
-                            drafts[selectedDeviceId] = ""
-                            attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }.clear()
-                        },
-                        locationState = locationState,
-                        onFullMap = { /* full map hook */ }
-                    )
+                    // ⬅ EXIT FULLSCREEN
+                    IconButton(
+                        onClick = { isMapFullscreen = false },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(16.dp)
+                            .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                    ) {
+                        Text("⬅", color = Color.White)
+                    }
 
-                    WindowSize.Expanded -> ExpandedLayout(
-                        devices = filtered,
-                        selectedDeviceId = selectedDeviceId,
-                        onSelectDevice = { selectedDeviceId = it },
-                        searchQuery = searchQuery,
-                        onSearch = { searchQuery = it },
-                        sortBy = sortBy,
-                        onSortChange = { sortBy = it },
-                        selectedDevice = selectedDevice,
-                        messages = messagesPerDevice[selectedDeviceId].orEmpty(),
-                        draft = drafts[selectedDeviceId].orEmpty(),
-                        onDraftChange = { drafts[selectedDeviceId] = it },
-                        attachments = attachments[selectedDeviceId].orEmpty(),
-                        onAddAttachment = { att ->
-                            val list = attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }
-                            list.add(att)
-                        },
-                        onRemoveAttachment = { att -> attachments[selectedDeviceId]?.remove(att) },
-                        onSend = { text, attachment ->
-                            sendMessage(text, null, attachment)
-                            drafts[selectedDeviceId] = ""
-                            attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }.clear()
-                        },
-                        locationState = locationState,
-                        onFullMap = { /* full map hook */ }
-                    )
+                    if (mqttState == MqttConnectionState.Connecting) {
+                        MqttConnectingOverlay()
+                    }
                 }
-                
-                // Show MQTT connecting overlay
-                if (mqttState == MqttConnectionState.Connecting) {
-                    MqttConnectingOverlay()
+            } else {
+                // ✅ EXISTING UI (chat + map)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(paddingValues)
+                ) {
+                    when (windowSize) {
+                        WindowSize.Compact -> MobileLayout(
+                            devices = filtered,
+                            selectedDevice = selectedDevice,
+                            messages = messagesPerDevice[selectedDeviceId].orEmpty(),
+                            onMessageSend = { text, attachment ->
+                                sendMessage(text, null, attachment)
+                                drafts[selectedDeviceId] = ""
+                                attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }.clear()
+                            },
+                            draft = drafts[selectedDeviceId].orEmpty(),
+                            onDraftChange = { drafts[selectedDeviceId] = it },
+                            selectedAttachments = attachments[selectedDeviceId].orEmpty(),
+                            onAddAttachment = {
+                                val list = attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }
+                                list.add(it)
+                            },
+                            onRemoveAttachment = { att ->
+                                attachments[selectedDeviceId]?.remove(att)
+                            },
+                            onSelectDevice = {
+                                selectedDeviceId = it
+                                scope.launch { drawerState.close() }
+                            },
+                            locationState = locationState,
+                            myDeviceId = myDeviceId,
+                            onFullMap = { isMapFullscreen = true }
+                        )
+
+                        WindowSize.Medium -> MediumLayout(
+                            devices = filtered,
+                            selectedDeviceId = selectedDeviceId,
+                            onSelectDevice = { selectedDeviceId = it },
+                            isCollapsed = isListCollapsed,
+                            onCollapseToggle = { isListCollapsed = !isListCollapsed },
+                            searchQuery = searchQuery,
+                            onSearch = { searchQuery = it },
+                            sortBy = sortBy,
+                            onSortChange = { sortBy = it },
+                            selectedDevice = selectedDevice,
+                            messages = messagesPerDevice[selectedDeviceId].orEmpty(),
+                            draft = drafts[selectedDeviceId].orEmpty(),
+                            onDraftChange = { drafts[selectedDeviceId] = it },
+                            attachments = attachments[selectedDeviceId].orEmpty(),
+                            onAddAttachment = { att ->
+                                val list = attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }
+                                list.add(att)
+                            },
+                            onRemoveAttachment = { att -> attachments[selectedDeviceId]?.remove(att) },
+                            onSend = { text, attachment ->
+                                sendMessage(text, null, attachment)
+                                drafts[selectedDeviceId] = ""
+                                attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }.clear()
+                            },
+                            locationState = locationState,
+                            myDeviceId = myDeviceId,
+                            onFullMap = { isMapFullscreen = true }
+                        )
+
+                        WindowSize.Expanded -> ExpandedLayout(
+                            devices = filtered,
+                            selectedDeviceId = selectedDeviceId,
+                            onSelectDevice = { selectedDeviceId = it },
+                            searchQuery = searchQuery,
+                            onSearch = { searchQuery = it },
+                            sortBy = sortBy,
+                            onSortChange = { sortBy = it },
+                            selectedDevice = selectedDevice,
+                            messages = messagesPerDevice[selectedDeviceId].orEmpty(),
+                            draft = drafts[selectedDeviceId].orEmpty(),
+                            onDraftChange = { drafts[selectedDeviceId] = it },
+                            attachments = attachments[selectedDeviceId].orEmpty(),
+                            onAddAttachment = { att ->
+                                val list = attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }
+                                list.add(att)
+                            },
+                            onRemoveAttachment = { att -> attachments[selectedDeviceId]?.remove(att) },
+                            onSend = { text, attachment ->
+                                sendMessage(text, null, attachment)
+                                drafts[selectedDeviceId] = ""
+                                attachments.getOrPut(selectedDeviceId) { mutableStateListOf() }.clear()
+                            },
+                            locationState = locationState,
+                            myDeviceId = myDeviceId,
+                            onFullMap = { isMapFullscreen = true }
+                        )
+                    }
+
+                    // Show MQTT connecting overlay
+                    if (mqttState == MqttConnectionState.Connecting) {
+                        MqttConnectingOverlay()
+                    }
                 }
             }
         }
@@ -676,6 +721,7 @@ private fun MobileLayout(
     onRemoveAttachment: (Attachment) -> Unit,
     onSelectDevice: (String) -> Unit,
     locationState: LocationState,
+    myDeviceId: String,
     onFullMap: () -> Unit
 ) {
     Column(
@@ -687,6 +733,7 @@ private fun MobileLayout(
         MapCard(
             devices = devices,
             locationState = locationState,
+            myDeviceId = myDeviceId,
             onFullScreen = onFullMap
         )
         ChatPane(
@@ -722,6 +769,7 @@ private fun MediumLayout(
     onRemoveAttachment: (Attachment) -> Unit,
     onSend: (String, Attachment?) -> Unit,
     locationState: LocationState,
+    myDeviceId: String,
     onFullMap: () -> Unit
 ) {
     Row(
@@ -753,6 +801,7 @@ private fun MediumLayout(
             MapCard(
                 devices = devices,
                 locationState = locationState,
+                myDeviceId = myDeviceId,
                 onFullScreen = onFullMap
             )
             ChatPane(
@@ -787,6 +836,7 @@ private fun ExpandedLayout(
     onRemoveAttachment: (Attachment) -> Unit,
     onSend: (String, Attachment?) -> Unit,
     locationState: LocationState,
+    myDeviceId: String,
     onFullMap: () -> Unit
 ) {
     Row(
@@ -816,6 +866,7 @@ private fun ExpandedLayout(
             MapCard(
                 devices = devices,
                 locationState = locationState,
+                myDeviceId = myDeviceId,
                 onFullScreen = onFullMap
             )
         }
@@ -897,6 +948,7 @@ private fun CoordinatesCard(device: Device) {
 private fun MapCard(
     devices: List<Device>,
     locationState: LocationState,
+    myDeviceId: String,
     onFullScreen: () -> Unit
 ){
     ElevatedCard(
@@ -918,6 +970,8 @@ private fun MapCard(
                         longitude = device.lon
                     )
                 },
+                currentLocation = locationState,
+                myDeviceId = myDeviceId,
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -944,7 +998,7 @@ private fun MapCard(
 
             }
 
-            // ℹ️ Fullscreen / info button (optional)
+            // ⛶ Fullscreen button
             IconButton(
                 onClick = onFullScreen,
                 modifier = Modifier
@@ -956,8 +1010,8 @@ private fun MapCard(
                     )
             ) {
                 Icon(
-                    imageVector = Icons.Default.Info,
-                    contentDescription = "Map info"
+                    imageVector = Icons.Default.Fullscreen,
+                    contentDescription = "Fullscreen map"
                 )
             }
         }
