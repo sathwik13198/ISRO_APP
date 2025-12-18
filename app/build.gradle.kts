@@ -44,10 +44,8 @@ android {
 
 dependencies {
 
-    //MQTT (NO Android service - uses standard MqttClient to avoid LocalBroadcastManager crash)
+    // MQTT (pure JVM client - no Android service, avoids LocalBroadcastManager crash)
     implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
-    // AndroidX LocalBroadcastManager (for compatibility if needed)
-    implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.1.0")
 
     // ===============================
     // 📍 LOCATION (GPS)

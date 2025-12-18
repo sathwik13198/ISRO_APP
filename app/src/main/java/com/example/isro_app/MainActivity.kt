@@ -4,6 +4,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.collectAsState
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.Intent
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -84,6 +86,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -169,9 +172,10 @@ private data class Device(
 
 private data class Attachment(
     val id: String = UUID.randomUUID().toString(),
+    val uri: android.net.Uri,
     val name: String,
     val sizeBytes: Long,
-    val type: String
+    val mimeType: String
 )
 
 private data class Message(
@@ -230,7 +234,7 @@ private fun IsroApp(
     }
 
     val myDeviceId = mqttManager.myId
-    
+
     var isMapFullscreen by rememberSaveable { mutableStateOf(false) }
     
     var selectedDeviceId by rememberSaveable { 
@@ -256,6 +260,50 @@ private fun IsroApp(
                 locationViewModel.start()
             }
         }
+
+    // ✅ FIX 1: Move attachments BEFORE filePickerLauncher (critical order)
+    val attachments = remember { mutableStateMapOf<String, SnapshotStateList<Attachment>>() }
+
+    val filePickerLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            uri ?: return@rememberLauncherForActivityResult
+
+            val resolver = context.contentResolver
+            resolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+
+            val cursor = resolver.query(uri, null, null, null, null)
+            cursor?.moveToFirst()
+
+            val nameIndex = cursor?.getColumnIndex(OpenableColumns.DISPLAY_NAME) ?: -1
+            val sizeIndex = cursor?.getColumnIndex(OpenableColumns.SIZE) ?: -1
+
+            val name = if (nameIndex >= 0) cursor?.getString(nameIndex) ?: "file" else "file"
+            val size = if (sizeIndex >= 0) cursor?.getLong(sizeIndex) ?: 0L else 0L
+            val type = resolver.getType(uri) ?: "application/octet-stream"
+
+            cursor?.close()
+
+            attachments
+                .getOrPut(selectedDeviceId) { mutableStateListOf() }
+                .add(
+                    Attachment(
+                        uri = uri,
+                        name = name,
+                        sizeBytes = size,
+                        mimeType = type
+                    )
+                )
+        }
+
+    // ✅ FIX 2: Create pickFile lambda to pass to child composables
+    val pickFile: () -> Unit = {
+        filePickerLauncher.launch(arrayOf("*/*"))
+    }
 
     LaunchedEffect(Unit) {
         if (
@@ -285,7 +333,7 @@ private fun IsroApp(
     val messagesPerDevice = remember {
         mutableStateMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<Message>>()
     }
-    
+
     // Initialize message lists for all devices
     LaunchedEffect(devices) {
         devices.forEach { device ->
@@ -294,35 +342,61 @@ private fun IsroApp(
             }
         }
     }
-    
-    // Get chat messages from MQTT and update messagesPerDevice (only incoming messages, not "you")
-    val mqttChatMessages by mqttManager.chatMessages.collectAsState()
-    LaunchedEffect(mqttChatMessages) {
-        // Only process incoming messages (not "you" messages, those are handled by sendMessage)
-        mqttChatMessages
-            .filter { it.from != "you" }
-            .forEach { chatMsg ->
-                val deviceId = chatMsg.from
-                if (deviceId.isNotBlank()) {
-                    val msgList = messagesPerDevice.getOrPut(deviceId) { mutableStateListOf() }
-                    val message = Message(
-                        from = chatMsg.from,
-                        to = "you",
-                        text = chatMsg.text,
-                        timestamp = chatMsg.timestamp,
-                        owner = MessageOwner.Remote,
-                        state = DeliveryState.Delivered
-                    )
-                    // Avoid duplicates
-                    if (msgList.none { it.timestamp == message.timestamp && it.text == message.text }) {
-                        msgList.add(message)
+
+    // Collect incoming MQTT chat items (text + attachments)
+    val incomingChatItems by mqttManager.chatItems.collectAsState()
+
+    // Bridge MQTT chat items into per-device UI message lists
+    LaunchedEffect(incomingChatItems) {
+        incomingChatItems.forEach { item ->
+            when (item) {
+                is com.example.isro_app.mqtt.ChatItem.Text -> {
+                    val from = item.from
+                    val list =
+                        messagesPerDevice.getOrPut(from) { mutableStateListOf() }
+
+                    // avoid duplicates
+                    if (list.none { it.timestamp == item.timestamp }) {
+                        list.add(
+                            Message(
+                                from = from,
+                                to = myDeviceId,
+                                text = item.text,
+                                timestamp = item.timestamp,
+                                owner = MessageOwner.Remote
+                            )
+                        )
+                    }
+                }
+
+                is com.example.isro_app.mqtt.ChatItem.Attachment -> {
+                    val from = item.from
+                    val list =
+                        messagesPerDevice.getOrPut(from) { mutableStateListOf() }
+
+                    if (list.none { it.timestamp == item.timestamp }) {
+                        list.add(
+                            Message(
+                                from = from,
+                                to = myDeviceId,
+                                text = null,
+                                attachment = Attachment(
+                                    uri = android.net.Uri.parse(item.downloadUrl),
+                                    name = item.filename,
+                                    sizeBytes = 0,
+                                    mimeType = "application/octet-stream"
+                                ),
+                                timestamp = item.timestamp,
+                                owner = MessageOwner.Remote
+                            )
+                        )
                     }
                 }
             }
+        }
     }
 
     val drafts = remember { mutableStateMapOf<String, String>() }
-    val attachments = remember { mutableStateMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<Attachment>>() }
 
     val filtered = remember(searchQuery, sortBy, devices) {
         devices
@@ -347,30 +421,42 @@ private fun IsroApp(
             return@sendMessage
         }
 
-        // Add message to local state immediately
-        if (text.isNotBlank()) {
-            val msgList = messagesPerDevice.getOrPut(deviceId) { mutableStateListOf() }
-            val pending = Message(
-                from = "you",
-                to = deviceId,
-                text = text,
-                attachment = attachment,
-                timestamp = System.currentTimeMillis(),
-                owner = MessageOwner.Local,
-                state = DeliveryState.Pending
+        val msgList = messagesPerDevice.getOrPut(deviceId) { mutableStateListOf() }
+
+        // Create single message with both text and attachment if present
+        val pending = Message(
+            from = "you",
+            to = deviceId,
+            text = text.ifBlank { null },
+            attachment = attachment,
+            timestamp = System.currentTimeMillis(),
+            owner = MessageOwner.Local,
+            state = DeliveryState.Pending
+        )
+        msgList.add(pending)
+
+        // Handle attachment upload
+        if (attachment != null) {
+            // Send attachment via HTTP + MQTT
+            mqttManager.sendAttachment(
+                peerId = deviceId,
+                fileUri = attachment.uri,
+                resolver = context.contentResolver
             )
-            msgList.add(pending)
-            
+        }
+
+        // Handle text message
+        if (text.isNotBlank()) {
             // Send via MQTT
             mqttManager.sendChat(deviceId, text)
-            
-            // Update to delivered after a short delay
-            scope.launch {
-                delay(600)
-                val idx = msgList.indexOfFirst { it.id == pending.id }
-                if (idx >= 0) {
-                    msgList[idx] = msgList[idx].copy(state = DeliveryState.Delivered)
-                }
+        }
+        
+        // Update to delivered after a short delay
+        scope.launch {
+            delay(600)
+            val idx = msgList.indexOfFirst { it.id == pending.id }
+            if (idx >= 0) {
+                msgList[idx] = msgList[idx].copy(state = DeliveryState.Delivered)
             }
         }
     }
@@ -523,7 +609,8 @@ private fun IsroApp(
                             },
                             locationState = locationState,
                             myDeviceId = myDeviceId,
-                            onFullMap = { isMapFullscreen = true }
+                            onFullMap = { isMapFullscreen = true },
+                            onPickFile = pickFile
                         )
 
                         WindowSize.Medium -> MediumLayout(
@@ -553,7 +640,8 @@ private fun IsroApp(
                             },
                             locationState = locationState,
                             myDeviceId = myDeviceId,
-                            onFullMap = { isMapFullscreen = true }
+                            onFullMap = { isMapFullscreen = true },
+                            onPickFile = pickFile
                         )
 
                         WindowSize.Expanded -> ExpandedLayout(
@@ -581,7 +669,8 @@ private fun IsroApp(
                             },
                             locationState = locationState,
                             myDeviceId = myDeviceId,
-                            onFullMap = { isMapFullscreen = true }
+                            onFullMap = { isMapFullscreen = true },
+                            onPickFile = pickFile
                         )
                     }
 
@@ -722,7 +811,8 @@ private fun MobileLayout(
     onSelectDevice: (String) -> Unit,
     locationState: LocationState,
     myDeviceId: String,
-    onFullMap: () -> Unit
+    onFullMap: () -> Unit,
+    onPickFile: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -744,7 +834,8 @@ private fun MobileLayout(
             attachments = selectedAttachments,
             onAddAttachment = onAddAttachment,
             onRemoveAttachment = onRemoveAttachment,
-            onSend = onMessageSend
+            onSend = onMessageSend,
+            onPickFile = onPickFile
         )
     }
 }
@@ -770,7 +861,8 @@ private fun MediumLayout(
     onSend: (String, Attachment?) -> Unit,
     locationState: LocationState,
     myDeviceId: String,
-    onFullMap: () -> Unit
+    onFullMap: () -> Unit,
+    onPickFile: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -812,7 +904,8 @@ private fun MediumLayout(
                 attachments = attachments,
                 onAddAttachment = onAddAttachment,
                 onRemoveAttachment = onRemoveAttachment,
-                onSend = onSend
+                onSend = onSend,
+                onPickFile = onPickFile
             )
         }
     }
@@ -837,7 +930,8 @@ private fun ExpandedLayout(
     onSend: (String, Attachment?) -> Unit,
     locationState: LocationState,
     myDeviceId: String,
-    onFullMap: () -> Unit
+    onFullMap: () -> Unit,
+    onPickFile: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -879,6 +973,7 @@ private fun ExpandedLayout(
             onAddAttachment = onAddAttachment,
             onRemoveAttachment = onRemoveAttachment,
             onSend = onSend,
+            onPickFile = onPickFile,
             modifier = Modifier
                 .width(360.dp)
                 .fillMaxHeight()
@@ -1030,6 +1125,7 @@ private fun ChatPane(
     onAddAttachment: (Attachment) -> Unit,
     onRemoveAttachment: (Attachment) -> Unit,
     onSend: (String, Attachment?) -> Unit,
+    onPickFile: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -1077,15 +1173,7 @@ private fun ChatPane(
         ChatInput(
             value = draft,
             onValueChange = onDraftChange,
-            onAttach = {
-                onAddAttachment(
-                    Attachment(
-                        name = "sample_${attachments.size + 1}.png",
-                        sizeBytes = 1_200_000,
-                        type = "image/png"
-                    )
-                )
-            },
+            onAttach = onPickFile,
             onSend = {
                 onSend(draft, attachments.firstOrNull())
             },
