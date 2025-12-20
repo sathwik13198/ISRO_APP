@@ -18,6 +18,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -1216,9 +1217,22 @@ private fun ChatBubble(message: Message) {
 
 @Composable
 private fun AttachmentChip(attachment: Attachment) {
+    val context = LocalContext.current
+    
     Row(
         modifier = Modifier
             .background(PrimaryBlue.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+            .clickable {
+                // Only download if URI is HTTP/HTTPS (received attachments)
+                val uriString = attachment.uri.toString()
+                if (uriString.startsWith("http://") || uriString.startsWith("https://")) {
+                    com.example.isro_app.mqtt.downloadAttachment(
+                        context = context,
+                        url = uriString,
+                        filename = attachment.name
+                    )
+                }
+            }
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)

@@ -53,7 +53,7 @@ class MqttManager(
 ) {
 
     private val brokerUri = "tcp://192.168.29.239:1883"
-    private val attachmentServer = "http://192.168.29.239:8090"
+    private val attachmentServer = "http://192.168.29.242:8090"
 
     private val gpsTopic = "gps/location"
     private val inboxTopic = "$myId/inbox"
@@ -176,6 +176,8 @@ class MqttManager(
                 val sender = json.getString("sender")
                 if (sender == myId) return   // ignore self echo
     
+                Log.d("ATTACH", "Received attachment from $sender")
+                
                 _chatItems.value = _chatItems.value + ChatItem.Attachment(
                     from = sender,
                     filename = json.getString("filename"),
@@ -237,25 +239,41 @@ class MqttManager(
 
     // -------- ATTACHMENT UPLOAD + MQTT --------
 
+    private fun getFileName(uri: Uri, resolver: ContentResolver): String {
+        resolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (cursor.moveToFirst() && nameIndex != -1) {
+                return cursor.getString(nameIndex)
+            }
+        }
+        return "file_${System.currentTimeMillis()}"
+    }
+
     fun sendAttachment(
         peerId: String,
         fileUri: Uri,
         resolver: ContentResolver
     ) {
         scope.launch {
+            var conn: HttpURLConnection? = null
             try {
                 val uploadUrl = URL("$attachmentServer/upload")
-                val conn = uploadUrl.openConnection() as HttpURLConnection
+                conn = uploadUrl.openConnection() as HttpURLConnection
 
-                val filename =
-                    fileUri.lastPathSegment ?: "file_${System.currentTimeMillis()}"
+                val filename = getFileName(fileUri, resolver)
+
+                // Get file size for Content-Length
+                val fileSize = resolver.openInputStream(fileUri)?.available() ?: 0
 
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("X-Filename", filename)
+                conn.setFixedLengthStreamingMode(fileSize)
                 conn.doOutput = true
 
                 val out = DataOutputStream(conn.outputStream)
-                resolver.openInputStream(fileUri)?.copyTo(out)
+                resolver.openInputStream(fileUri)?.use { input ->
+                    input.copyTo(out)
+                }
                 out.flush()
                 out.close()
 
@@ -274,6 +292,8 @@ class MqttManager(
 
             } catch (e: Exception) {
                 Log.e("ATTACH", "Upload failed", e)
+            } finally {
+                conn?.disconnect()
             }
         }
     }

@@ -11,6 +11,7 @@ A modern Android application for real-time device tracking, GPS monitoring, and 
 - **Interactive Maps**: Full-screen map mode with pan, zoom, and follow controls
 - **Multi-Device Support**: Track and communicate with multiple devices on a network
 - **Chat System**: Real-time messaging between devices
+- **File Attachments**: Send and receive files (images, PDFs, etc.) via chat
 - **Responsive UI**: Adaptive layouts for mobile, tablet, and desktop screens
 
 ### Map Features ✨
@@ -186,7 +187,162 @@ private val LanTileSource = XYTileSource(
 
 Replace `YOUR_SERVER_IP` with the IP address of the machine running the tile server (e.g., `192.168.29.242`).
 
-### 5. Build and Run
+### 5. Set Up Attachment Server (For File Sharing)
+
+The attachment server handles file uploads and downloads for the chat attachment feature.
+
+#### 5.1. Create Attachment Server Script
+Create `attachment_server.py` in any directory (can be same as tile server or separate):
+
+```python
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import os
+import json
+import uuid
+import mimetypes
+
+# ---------------- CONFIG ----------------
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(BASE_DIR, "received_files")
+
+PORT = 8090
+SERVER_IP = "192.168.29.242"   # change only if IP changes
+
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# ---------------- HANDLER ----------------
+
+class AttachmentHandler(BaseHTTPRequestHandler):
+
+    # ---- Common headers (CORS) ----
+    def _set_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+
+    # ---- OPTIONS (CORS preflight) ----
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self._set_headers()
+        self.end_headers()
+
+    # ---- UPLOAD ----
+    def do_POST(self):
+        if self.path != "/upload":
+            self.send_error(404)
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            filename = self.headers.get("X-Filename", "unknown_file")
+
+            file_id = str(uuid.uuid4())
+            safe_filename = filename.replace("/", "_").replace("\\", "_")
+            save_path = os.path.join(UPLOAD_DIR, f"{file_id}_{safe_filename}")
+
+            remaining = content_length
+            with open(save_path, "wb") as f:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(4096, remaining))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    remaining -= len(chunk)
+
+            response = {
+                "file_id": file_id,
+                "filename": safe_filename,
+                "download_url": f"http://{SERVER_IP}:{PORT}/download/{file_id}"
+            }
+
+            self.send_response(200)
+            self._set_headers()
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode())
+
+            print(f"[UPLOAD] {safe_filename} saved")
+
+        except Exception as e:
+            print("[ERROR] Upload failed:", e)
+            self.send_error(500, "Upload failed")
+
+    # ---- DOWNLOAD (✅ MIME FIX HERE) ----
+    def do_GET(self):
+        if not self.path.startswith("/download/"):
+            self.send_error(404)
+            return
+
+        file_id = self.path.split("/")[-1]
+
+        for file in os.listdir(UPLOAD_DIR):
+            if file.startswith(file_id):
+                file_path = os.path.join(UPLOAD_DIR, file)
+                original_filename = file.split("_", 1)[1]
+
+                # ✅ Detect correct MIME type
+                mime_type, _ = mimetypes.guess_type(original_filename)
+                if mime_type is None:
+                    mime_type = "application/octet-stream"
+
+                self.send_response(200)
+                self._set_headers()
+                self.send_header("Content-Type", mime_type)
+                self.send_header(
+                    "Content-Disposition",
+                    f'attachment; filename="{original_filename}"'
+                )
+                self.send_header("Content-Length", str(os.path.getsize(file_path)))
+                self.end_headers()
+
+                with open(file_path, "rb") as f:
+                    while True:
+                        chunk = f.read(4096)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+
+                print(f"[DOWNLOAD] {original_filename} ({mime_type})")
+                return
+
+        self.send_error(404, "File not found")
+
+# ---------------- RUN SERVER ----------------
+
+if __name__ == "__main__":
+    print(f"[ATTACHMENT SERVER] Running on 0.0.0.0:{PORT}")
+    HTTPServer(("0.0.0.0", PORT), AttachmentHandler).serve_forever()
+```
+
+#### 5.2. Configure Server IP
+Edit the `SERVER_IP` variable in `attachment_server.py`:
+
+```python
+SERVER_IP = "192.168.29.242"   # Change this to your server's IP address
+```
+
+#### 5.3. Start the Attachment Server
+```bash
+python3 attachment_server.py
+```
+
+The server will:
+- Start on port 8090
+- Create a `received_files/` directory automatically
+- Handle file uploads at `/upload` endpoint
+- Serve file downloads at `/download/{file_id}` endpoint
+
+#### 5.4. Configure Attachment Server IP in App
+The attachment server IP is already configured in `app/src/main/java/com/example/isro_app/mqtt/MqttManager.kt`:
+
+```kotlin
+private val attachmentServer = "http://192.168.29.242:8090"
+```
+
+Update this IP address to match your attachment server's IP address.
+
+### 6. Build and Run
 ```bash
 ./gradlew assembleDebug
 ```
@@ -225,7 +381,8 @@ app/src/main/java/com/example/isro_app/
 ├── location/
 │   └── LocationState.kt    # Location data model
 └── mqtt/
-    └── MqttManager.kt       # MQTT communication handler
+    ├── MqttManager.kt       # MQTT communication handler
+    └── AttachmentDownloader.kt  # File download handler (DownloadManager)
 ```
 
 ### Key Components
@@ -233,8 +390,10 @@ app/src/main/java/com/example/isro_app/
 #### MqttManager
 - Handles all MQTT communication
 - Manages device discovery via GPS topic
-- Processes incoming chat messages
+- Processes incoming chat messages and attachments
 - Publishes GPS coordinates
+- Handles file uploads via HTTP
+- Sends attachment metadata via MQTT
 - Connection state management
 
 #### LocationViewModel
@@ -246,6 +405,7 @@ app/src/main/java/com/example/isro_app/
 - Main UI composable
 - Responsive layouts (Mobile/Tablet/Desktop)
 - Device list and chat interface
+- Attachment handling (upload/download)
 - Map integration with fullscreen mode
 
 #### OfflineMapComposable
@@ -259,11 +419,18 @@ app/src/main/java/com/example/isro_app/
 
 ### MQTT Broker Settings
 Default configuration in `MqttManager.kt`:
-- **Broker URI**: `tcp://192.168.10.100:1883`
+- **Broker URI**: `tcp://192.168.29.239:1883`
 - **Client ID**: Auto-generated with timestamp
 - **Topics**:
   - GPS: `gps/location`
   - Inbox: `{clientId}/inbox`
+
+### Attachment Server Settings
+Default configuration in `MqttManager.kt`:
+- **Server URL**: `http://192.168.29.242:8090`
+- **Port**: 8090
+- **Upload Endpoint**: `/upload`
+- **Download Endpoint**: `/download/{file_id}`
 
 ### Tile Server Settings
 Default configuration in `OfflineMapComposable.kt`:
@@ -271,6 +438,43 @@ Default configuration in `OfflineMapComposable.kt`:
 - **Port**: 8080
 - **Zoom Range**: 0 to 14
 - **Tile Format**: PNG (256x256)
+
+### Attachment Server Details
+
+#### Directory Structure
+```
+attachment_server_directory/
+├── attachment_server.py      # Server script
+└── received_files/           # Auto-created directory for uploaded files
+    └── {file_id}_{filename}  # Stored files
+```
+
+#### API Endpoints
+
+**POST /upload**
+- Accepts file uploads
+- Headers:
+  - `X-Filename`: Original filename
+  - `Content-Length`: File size in bytes
+- Returns JSON:
+  ```json
+  {
+    "file_id": "uuid",
+    "filename": "original_filename.ext",
+    "download_url": "http://server:8090/download/uuid"
+  }
+  ```
+
+**GET /download/{file_id}**
+- Serves files for download
+- Automatically detects MIME type
+- Sets appropriate Content-Type and Content-Disposition headers
+
+#### Server Requirements
+- Python 3.x
+- HTTP server capability (uses standard library)
+- Network access from Android devices
+- Disk space for uploaded files
 
 ### Permissions
 Required permissions (already configured in `AndroidManifest.xml`):
@@ -317,6 +521,14 @@ OSMDroid is initialized in:
 - Select a device from the list
 - Type a message and send
 - Messages are delivered via MQTT
+
+#### File Attachments
+- Tap the attachment icon (📎) in chat input to select a file
+- Files are uploaded to the attachment server via HTTP
+- Attachment metadata is sent via MQTT
+- Recipients can tap the attachment to download it
+- Downloaded files are saved to `/Download/ISRO_ATTACHMENTS/` folder
+- Files can be opened from Files app or Gallery
 
 #### Maps
 - Map fetches tiles from LAN server (configured IP)
@@ -421,6 +633,30 @@ Tiles follow the **TMS (Tile Map Service)** format:
   - Check tile file paths match expected format
   - Review server console logs for request details
 
+### Attachment Server Issues
+
+**Problem**: Attachment upload fails
+- **Solution**:
+  - Ensure attachment server is running on port 8090
+  - Check server IP address in `MqttManager.kt` matches actual server IP
+  - Verify network connectivity between device and server
+  - Check server console logs for errors
+  - Ensure firewall allows port 8090
+
+**Problem**: Download doesn't start when tapping attachment
+- **Solution**:
+  - Verify attachment server is accessible
+  - Check download URL is valid (HTTP/HTTPS)
+  - Ensure device has storage permissions (for Android 10 and below)
+  - Check DownloadManager is working (system service)
+
+**Problem**: Files not appearing in Downloads folder
+- **Solution**:
+  - Files are saved to `/Download/ISRO_ATTACHMENTS/` (not root Downloads)
+  - Check Files app → Downloads → ISRO_ATTACHMENTS folder
+  - Verify download completed (check notification)
+  - Ensure sufficient storage space available
+
 ### Build Issues
 
 **Problem**: Gradle sync fails
@@ -438,12 +674,16 @@ Tiles follow the **TMS (Tile Map Service)** format:
 - Consider using secure MQTT (TLS/SSL) for production deployments
 - Location data is transmitted via MQTT - ensure broker security
 - Tile server runs on local network - configure firewall appropriately
+- Attachment server runs on local network - configure firewall appropriately
 - No authentication on tile server (acceptable for LAN use, add auth for production)
+- No authentication on attachment server (acceptable for LAN use, add auth for production)
+- Files are stored on server in `received_files/` directory - consider cleanup policy
 
 ## 🚧 Known Limitations
 
 - MQTT broker IP is hardcoded (should be configurable)
 - Tile server IP is hardcoded (should be configurable)
+- Attachment server IP is hardcoded (should be configurable)
 - No message encryption (plain text MQTT)
 - Tile server has no authentication (LAN-only use)
 - Device list doesn't persist across app restarts
@@ -460,7 +700,11 @@ Tiles follow the **TMS (Tile Map Service)** format:
 - [ ] Push notifications for messages
 - [ ] Multi-broker support
 - [ ] Tile server authentication
+- [ ] Attachment server authentication
 - [ ] Offline tile caching improvements
+- [ ] Attachment preview in chat (images)
+- [ ] Attachment size limits
+- [ ] Attachment cleanup/expiration policy
 
 ## 📝 Notes
 
