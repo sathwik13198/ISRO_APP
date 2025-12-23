@@ -18,6 +18,16 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    packaging {
+        resources {
+            pickFirsts += setOf("**/*.so")
+        }
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -43,6 +53,10 @@ android {
 }
 
 dependencies {
+
+    // SIP / RTP native stack
+    implementation("org.linphone:linphone-sdk-android:5.3.0")
+
 
     // MQTT (pure JVM client - no Android service, avoids LocalBroadcastManager crash)
     implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")

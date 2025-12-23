@@ -11,14 +11,17 @@ pluginManagement {
         gradlePluginPortal()
     }
 }
+
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
         mavenCentral()
+
+        // ✅ Linphone official repo
+        maven { url = uri("https://linphone.org/maven_repository") }
     }
 }
 
 rootProject.name = "ISRO_APP"
 include(":app")
- 

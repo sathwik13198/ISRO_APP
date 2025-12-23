@@ -1,8 +1,11 @@
 package com.example.isro_app.mqtt
 
 import android.content.ContentResolver
+import android.content.Context
 import android.net.Uri
 import android.util.Log
+import com.example.isro_app.call.CallState
+import com.example.isro_app.call.SipEngine
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -46,9 +49,18 @@ sealed class ChatItem {
     ) : ChatItem()
 }
 
+// -------- CALL DATA MODEL --------
+
+data class CallMessage(
+    val type: String,
+    val from: String,
+    val to: String? = null
+)
+
 // -------- MQTT MANAGER --------
 
 class MqttManager(
+    private val context: Context,
     val myId: String
 ) {
 
@@ -168,6 +180,42 @@ class MqttManager(
     // -------- INBOX (CHAT + ATTACHMENTS) --------
 
     private fun handleInbox(payload: String) {
+        // ===============================
+        // CALL SIGNALING (MQTT)
+        // ===============================
+        try {
+            val data = JSONObject(payload)
+
+            when (data.getString("type")) {
+
+                "CALL_REQUEST" -> {
+                    val from = data.getString("from")
+                    CallState.incomingCall(from)
+                    return
+                }
+
+                "CALL_ACCEPT" -> {
+                    CallState.callConnected()
+                    SipEngine.answer()
+                    return
+                }
+
+                "CALL_REJECT" -> {
+                    CallState.callEnded()
+                    SipEngine.hangup()
+                    return
+                }
+
+                "CALL_END" -> {
+                    CallState.callEnded()
+                    SipEngine.hangup()
+                    return
+                }
+            }
+        } catch (e: Exception) {
+            // ignore and fall through to chat/attachment handling
+        }
+
         try {
             val json = JSONObject(payload)
     
@@ -188,7 +236,7 @@ class MqttManager(
         } catch (_: Exception) {
             // Not JSON → continue as text
         }
-    
+
         // Text message: "sender: message"
         val split = payload.split(":", limit = 2)
         if (split.size == 2) {
@@ -208,6 +256,7 @@ class MqttManager(
     // -------- GPS --------
 
     fun publishGps(lat: Double, lon: Double, timestamp: String) {
+        if (!::mqttClient.isInitialized) return
         if (!mqttClient.isConnected) return
 
         val json = JSONObject().apply {
@@ -325,4 +374,68 @@ class MqttManager(
             )
         }
     }
+
+    // -------- CALL SIGNALING (SEND) --------
+
+    fun sendCallRequest(peerId: String) {
+        if (!mqttClient.isConnected) return
+    
+        CallState.outgoingCall(peerId)
+    
+        val payload = JSONObject().apply {
+            put("type", "CALL_REQUEST")
+            put("from", myId)
+            put("to", peerId)
+        }
+    
+        mqttClient.publish(
+            "$peerId/inbox",
+            MqttMessage(payload.toString().toByteArray()).apply { qos = 1 }
+        )
+    }
+    
+
+    fun sendCallAccept(peerId: String) {
+        if (!mqttClient.isConnected) return
+
+        val payload = JSONObject().apply {
+            put("type", "CALL_ACCEPT")
+            put("from", myId)
+        }
+
+        mqttClient.publish(
+            "$peerId/inbox",
+            MqttMessage(payload.toString().toByteArray()).apply { qos = 1 }
+        )
+    }
+
+    fun sendCallReject(peerId: String) {
+        if (!mqttClient.isConnected) return
+
+        val payload = JSONObject().apply {
+            put("type", "CALL_REJECT")
+            put("from", myId)
+        }
+
+        mqttClient.publish(
+            "$peerId/inbox",
+            MqttMessage(payload.toString().toByteArray()).apply { qos = 1 }
+        )
+    }
+
+    fun sendCallEnd(peerId: String) {
+        if (!mqttClient.isConnected) return
+    
+        CallState.callEnded()
+    
+        val payload = JSONObject().apply {
+            put("type", "CALL_END")
+            put("from", myId)
+        }
+    
+        mqttClient.publish(
+            "$peerId/inbox",
+            MqttMessage(payload.toString().toByteArray()).apply { qos = 1 }
+        )
+    }    
 }
