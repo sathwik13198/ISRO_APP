@@ -3,6 +3,7 @@ package com.example.isro_app
 import android.app.Application
 import android.os.Environment
 import androidx.preference.PreferenceManager
+import com.example.isro_app.call.SipEngine
 import com.example.isro_app.mqtt.MqttManager
 import org.osmdroid.config.Configuration
 import java.io.File
@@ -22,9 +23,15 @@ class MyApplication : Application() {
         super.onCreate()
 
         // ---- Initialize MQTT (global singleton) ----
-        // Change "android1" to a unique ID on each device (e.g. "android2").
-        mqttManager = MqttManager(myId = "Vivek")
+        // 🔴 SIP username must match what you configure in Asterisk
+        mqttManager = MqttManager(
+            context = this,
+            myId = "Vivek"   // 🔴 must match SIP username
+        )
         mqttManager.connect()
+
+        // ---- Start SIP engine (Baresip) ----
+        SipEngine.start(this)
 
         // ---- Initialize OSMDroid base paths ----
         val osmBasePath = File(
