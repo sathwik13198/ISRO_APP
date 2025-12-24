@@ -3,11 +3,14 @@ package com.example.isro_app
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.collectAsState
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.content.Intent
+import android.media.AudioManager
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.collectAsState
@@ -103,6 +106,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.example.iax.IaxManager
 import com.example.isro_app.ui.theme.Divider
 import com.example.isro_app.ui.theme.ISRO_APPTheme
 import com.example.isro_app.ui.theme.PrimaryBlue
@@ -115,6 +119,7 @@ import com.example.isro_app.mqtt.MqttConnectionState
 import com.example.isro_app.MapDevice
 import android.widget.Toast
 import androidx.compose.material3.CircularProgressIndicator
+import com.example.iax.IaxRegister
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -124,6 +129,8 @@ import java.util.Locale
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
+    private lateinit var iaxManager: IaxManager
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
     
@@ -133,6 +140,18 @@ class MainActivity : ComponentActivity() {
         config.osmdroidTileCache = File(filesDir, "osmdroid")
     
         val mqttManager = (application as MyApplication).mqttManager
+        iaxManager = IaxManager(this)
+
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.RECORD_AUDIO),
+            101
+        )
+        IaxRegister(
+            "192.168.29.242",
+            "1001"
+        ).start()
+
     
         enableEdgeToEdge()
         setContent {
@@ -142,6 +161,34 @@ class MainActivity : ComponentActivity() {
         }
     }
     
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == 101 &&
+            grantResults.isNotEmpty() &&
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        ) {
+            // ✅ Permission granted → NOW start audio
+            iaxManager.startCall("1001")
+            routeAudioToEarpiece()
+        } else {
+            Toast.makeText(
+                this,
+                "Microphone permission required for calling",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+    
+    private fun routeAudioToEarpiece() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        audioManager.isSpeakerphoneOn = false
+    }
 }
 
 private enum class WindowSize { Compact, Medium, Expanded }
