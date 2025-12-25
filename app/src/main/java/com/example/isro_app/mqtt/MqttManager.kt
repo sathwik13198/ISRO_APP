@@ -46,6 +46,15 @@ sealed class ChatItem {
     ) : ChatItem()
 }
 
+// -------- CALL SIGNALING --------
+
+sealed class CallEvent {
+    data class Incoming(val from: String) : CallEvent()
+    data class Accepted(val from: String) : CallEvent()
+    data class Rejected(val from: String) : CallEvent()
+    data class Ended(val from: String) : CallEvent()
+}
+
 // -------- MQTT MANAGER --------
 
 class MqttManager(
@@ -80,6 +89,9 @@ class MqttManager(
     private val _connectionState =
         MutableStateFlow<MqttConnectionState>(MqttConnectionState.Idle)
     val connectionState: StateFlow<MqttConnectionState> = _connectionState
+
+    private val _callEvents = MutableStateFlow<CallEvent?>(null)
+    val callEvents: StateFlow<CallEvent?> = _callEvents
 
     // -------- CONNECT --------
 
@@ -165,13 +177,48 @@ class MqttManager(
         } catch (_: Exception) {}
     }
 
-    // -------- INBOX (CHAT + ATTACHMENTS) --------
+    // -------- INBOX (CHAT + ATTACHMENTS + CALL SIGNALING) --------
 
     private fun handleInbox(payload: String) {
         try {
             val json = JSONObject(payload)
-    
-            // Attachment message
+
+            // ===============================
+            // CALL SIGNALING (MQTT)
+            // ===============================
+            when (json.optString("type")) {
+                "CALL_REQUEST" -> {
+                    val from = json.getString("from")
+                    if (from != myId) {
+                        Log.d("CALL", "Incoming call from $from")
+                        _callEvents.value = CallEvent.Incoming(from)
+                    }
+                    return
+                }
+
+                "CALL_ACCEPT" -> {
+                    val from = json.getString("from")
+                    Log.d("CALL", "Call accepted by $from")
+                    _callEvents.value = CallEvent.Accepted(from)
+                    return
+                }
+
+                "CALL_REJECT" -> {
+                    val from = json.getString("from")
+                    Log.d("CALL", "Call rejected by $from")
+                    _callEvents.value = CallEvent.Rejected(from)
+                    return
+                }
+
+                "CALL_END" -> {
+                    val from = json.getString("from")
+                    Log.d("CALL", "Call ended by $from")
+                    _callEvents.value = CallEvent.Ended(from)
+                    return
+                }
+            }
+
+            // ===== EXISTING ATTACHMENT LOGIC =====
             if (json.optString("type") == "attachment") {
                 val sender = json.getString("sender")
                 if (sender == myId) return   // ignore self echo
@@ -189,6 +236,7 @@ class MqttManager(
             // Not JSON → continue as text
         }
     
+        // ===== EXISTING TEXT LOGIC =====
         // Text message: "sender: message"
         val split = payload.split(":", limit = 2)
         if (split.size == 2) {
@@ -324,5 +372,39 @@ class MqttManager(
                 downloadUrl = downloadUrl
             )
         }
+    }
+
+    // -------- CALL SIGNALING SEND --------
+
+    fun sendCallRequest(peerId: String) {
+        if (!mqttClient.isConnected) return
+        sendCallSignal(peerId, "CALL_REQUEST")
+    }
+
+    fun sendCallAccept(peerId: String) {
+        if (!mqttClient.isConnected) return
+        sendCallSignal(peerId, "CALL_ACCEPT")
+    }
+
+    fun sendCallReject(peerId: String) {
+        if (!mqttClient.isConnected) return
+        sendCallSignal(peerId, "CALL_REJECT")
+    }
+
+    fun sendCallEnd(peerId: String) {
+        if (!mqttClient.isConnected) return
+        sendCallSignal(peerId, "CALL_END")
+    }
+
+    private fun sendCallSignal(peerId: String, type: String) {
+        val payload = JSONObject().apply {
+            put("type", type)
+            put("from", myId)
+            put("to", peerId)
+        }
+        mqttClient.publish(
+            "$peerId/inbox",
+            MqttMessage(payload.toString().toByteArray()).apply { qos = 1 }
+        )
     }
 }

@@ -46,6 +46,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Attachment
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FilterList
@@ -72,11 +73,13 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.rememberDrawerState
@@ -107,6 +110,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.iax.IaxManager
+import com.example.isro_app.call.CallController
 import com.example.isro_app.ui.theme.Divider
 import com.example.isro_app.ui.theme.ISRO_APPTheme
 import com.example.isro_app.ui.theme.PrimaryBlue
@@ -116,10 +120,10 @@ import com.example.isro_app.ui.theme.TextPrimary
 import com.example.isro_app.ui.theme.TextSecondary
 import com.example.isro_app.mqtt.MqttManager
 import com.example.isro_app.mqtt.MqttConnectionState
+import com.example.isro_app.mqtt.CallEvent
 import com.example.isro_app.MapDevice
 import android.widget.Toast
 import androidx.compose.material3.CircularProgressIndicator
-import com.example.iax.IaxRegister
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -130,6 +134,7 @@ import java.util.UUID
 
 class MainActivity : ComponentActivity() {
     private lateinit var iaxManager: IaxManager
+    lateinit var callController: CallController
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -140,23 +145,29 @@ class MainActivity : ComponentActivity() {
         config.osmdroidTileCache = File(filesDir, "osmdroid")
     
         val mqttManager = (application as MyApplication).mqttManager
-        iaxManager = IaxManager(this)
+        iaxManager = IaxManager("192.168.29.242")
+        iaxManager.connect()
+
+        callController = CallController(
+            context = this,
+            mqtt = mqttManager,
+            iax = iaxManager
+        )
 
         ActivityCompat.requestPermissions(
             this,
             arrayOf(Manifest.permission.RECORD_AUDIO),
             101
         )
-        IaxRegister(
-            "192.168.29.242",
-            "1001"
-        ).start()
 
     
         enableEdgeToEdge()
         setContent {
             ISRO_APPTheme {
-                IsroApp(mqttManager = mqttManager)
+                IsroApp(
+                    mqttManager = mqttManager,
+                    callController = callController
+                )
             }
         }
     }
@@ -172,9 +183,7 @@ class MainActivity : ComponentActivity() {
             grantResults.isNotEmpty() &&
             grantResults[0] == PackageManager.PERMISSION_GRANTED
         ) {
-            // ✅ Permission granted → NOW start audio
-            iaxManager.startCall("1001")
-            routeAudioToEarpiece()
+            // Permission granted - audio will start only after CALL_ACCEPT
         } else {
             Toast.makeText(
                 this,
@@ -182,12 +191,6 @@ class MainActivity : ComponentActivity() {
                 Toast.LENGTH_LONG
             ).show()
         }
-    }
-    
-    private fun routeAudioToEarpiece() {
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-        audioManager.isSpeakerphoneOn = false
     }
 }
 
@@ -240,7 +243,8 @@ private data class Message(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun IsroApp(
-    mqttManager: MqttManager
+    mqttManager: MqttManager,
+    callController: CallController
 ) {
     val locationViewModel: LocationViewModel = viewModel()
     val locationState by locationViewModel.location.collectAsState()
@@ -287,6 +291,26 @@ private fun IsroApp(
     
     var selectedDeviceId by rememberSaveable { 
         mutableStateOf("")
+    }
+
+    // Call event handling
+    val callEvent by mqttManager.callEvents.collectAsState()
+    var incomingCallFrom by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(callEvent) {
+        when (val event = callEvent) {
+            is CallEvent.Incoming -> incomingCallFrom = event.from
+            is CallEvent.Rejected -> incomingCallFrom = null
+            is CallEvent.Ended -> {
+                callController.onCallEnded()
+                incomingCallFrom = null
+            }
+            is CallEvent.Accepted -> {
+                callController.onCallAccepted(event.from)
+                incomingCallFrom = null
+            }
+            null -> {}
+        }
     }
     
     // Initialize selectedDeviceId when devices become available
@@ -658,7 +682,8 @@ private fun IsroApp(
                             locationState = locationState,
                             myDeviceId = myDeviceId,
                             onFullMap = { isMapFullscreen = true },
-                            onPickFile = pickFile
+                            onPickFile = pickFile,
+                            callController = callController
                         )
 
                         WindowSize.Medium -> MediumLayout(
@@ -689,7 +714,8 @@ private fun IsroApp(
                             locationState = locationState,
                             myDeviceId = myDeviceId,
                             onFullMap = { isMapFullscreen = true },
-                            onPickFile = pickFile
+                            onPickFile = pickFile,
+                            callController = callController
                         )
 
                         WindowSize.Expanded -> ExpandedLayout(
@@ -718,7 +744,8 @@ private fun IsroApp(
                             locationState = locationState,
                             myDeviceId = myDeviceId,
                             onFullMap = { isMapFullscreen = true },
-                            onPickFile = pickFile
+                            onPickFile = pickFile,
+                            callController = callController
                         )
                     }
 
@@ -728,6 +755,30 @@ private fun IsroApp(
                     }
                 }
             }
+        }
+
+        // 🔔 Incoming call dialog
+        incomingCallFrom?.let { caller ->
+            AlertDialog(
+                onDismissRequest = {
+                    callController.rejectCall(caller)
+                    incomingCallFrom = null
+                },
+                title = { Text("Incoming Call") },
+                text = { Text("Call from $caller") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        callController.acceptCall(caller)
+                        incomingCallFrom = null
+                    }) { Text("Accept") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        callController.rejectCall(caller)
+                        incomingCallFrom = null
+                    }) { Text("Reject") }
+                }
+            )
         }
     }
 }
@@ -860,7 +911,8 @@ private fun MobileLayout(
     locationState: LocationState,
     myDeviceId: String,
     onFullMap: () -> Unit,
-    onPickFile: () -> Unit
+    onPickFile: () -> Unit,
+    callController: CallController
 ) {
     Column(
         modifier = Modifier
@@ -883,7 +935,8 @@ private fun MobileLayout(
             onAddAttachment = onAddAttachment,
             onRemoveAttachment = onRemoveAttachment,
             onSend = onMessageSend,
-            onPickFile = onPickFile
+            onPickFile = onPickFile,
+            callController = callController
         )
     }
 }
@@ -910,7 +963,8 @@ private fun MediumLayout(
     locationState: LocationState,
     myDeviceId: String,
     onFullMap: () -> Unit,
-    onPickFile: () -> Unit
+    onPickFile: () -> Unit,
+    callController: CallController
 ) {
     Row(
         modifier = Modifier
@@ -953,7 +1007,8 @@ private fun MediumLayout(
                 onAddAttachment = onAddAttachment,
                 onRemoveAttachment = onRemoveAttachment,
                 onSend = onSend,
-                onPickFile = onPickFile
+                onPickFile = onPickFile,
+                callController = callController
             )
         }
     }
@@ -979,7 +1034,8 @@ private fun ExpandedLayout(
     locationState: LocationState,
     myDeviceId: String,
     onFullMap: () -> Unit,
-    onPickFile: () -> Unit
+    onPickFile: () -> Unit,
+    callController: CallController
 ) {
     Row(
         modifier = Modifier
@@ -1022,6 +1078,7 @@ private fun ExpandedLayout(
             onRemoveAttachment = onRemoveAttachment,
             onSend = onSend,
             onPickFile = onPickFile,
+            callController = callController,
             modifier = Modifier
                 .width(360.dp)
                 .fillMaxHeight()
@@ -1174,6 +1231,7 @@ private fun ChatPane(
     onRemoveAttachment: (Attachment) -> Unit,
     onSend: (String, Attachment?) -> Unit,
     onPickFile: () -> Unit,
+    callController: CallController,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -1191,14 +1249,23 @@ private fun ChatPane(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Column {
-                Text(device?.displayName ?: "No device selected", style = MaterialTheme.typography.headlineSmall)
-                if (device != null) {
-                    Text(
-                        "Last seen ${formatRelativeTime(device.lastSeen)}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary
-                    )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column {
+                    Text(device?.displayName ?: "No device selected", style = MaterialTheme.typography.headlineSmall)
+                    if (device != null) {
+                        Text(
+                            "Last seen ${formatRelativeTime(device.lastSeen)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextSecondary
+                        )
+                    }
+                }
+                device?.let {
+                    IconButton(onClick = {
+                        callController.outgoingCall(it.clientId)
+                    }) {
+                        Icon(Icons.Default.Call, contentDescription = "Call")
+                    }
                 }
             }
             device?.let { StatusDot(it.status) }
@@ -1429,13 +1496,13 @@ private fun MqttConnectingOverlay() {
     }
 }
 
-@Preview(showBackground = true, widthDp = 420)
-@Composable
-private fun MobilePreview() {
-    ISRO_APPTheme {
-        // Preview uses a local MqttManager instance without connecting.
-        // This keeps the UI happy without doing real network work.
-        val previewMqttManager = MqttManager(myId = "preview")
-        IsroApp(mqttManager = previewMqttManager)
-    }
-}
+// Preview disabled - requires CallController which needs real Context
+// @Preview(showBackground = true, widthDp = 420)
+// @Composable
+// private fun MobilePreview() {
+//     ISRO_APPTheme {
+//         // Preview requires CallController which needs real Context and dependencies
+//         // val previewMqttManager = MqttManager(myId = "preview")
+//         // IsroApp(mqttManager = previewMqttManager, callController = ...)
+//     }
+// }

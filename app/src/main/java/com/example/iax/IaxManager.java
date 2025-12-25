@@ -1,39 +1,46 @@
 package com.example.iax;
 
-import android.content.Context;
 import android.util.Log;
 
 public class IaxManager {
 
-    private static final String TAG = "IAX";
-    private final IaxAudioHandler audioHandler;
+    private static final String TAG = "IAX-MANAGER";
 
-    public interface IncomingCallListener {
-        void onCallReceived(String from);
-    }
+    private final IaxUdpTransport udp;
+    private final String asteriskIp;
 
-    private IncomingCallListener listener;
-
-    public IaxManager(Context context) {
-        audioHandler = new IaxAudioHandler(context);
+    public IaxManager(String asteriskIp) {
+        this.asteriskIp = asteriskIp;
+        this.udp = new IaxUdpTransport();
     }
 
     public void connect() {
-        Log.d(TAG, "IAX manager initialized");
+        udp.start(asteriskIp);
+        Log.d(TAG, "Connected to Asterisk UDP controller");
+    }
+
+    public void call(String extension) {
+        String msg = "CALL " + extension;
+        udp.send(msg.getBytes());
+        Log.d(TAG, "CALL sent: " + extension);
     }
 
     public void startCall(String extension) {
-        Log.d(TAG, "Starting call to " + extension);
-        audioHandler.startLoopback();
+        Log.d("IAX-MANAGER", "Starting call to " + extension);
+
+        new Thread(() -> {
+            udp.sendCommand("CALL " + extension);
+        }).start();
     }
 
-
-    public void endCall() {
-        Log.d(TAG, "Ending call");
-        audioHandler.stop();
+    public void hangup() {
+        String msg = "HANGUP";
+        udp.send(msg.getBytes());
+        Log.d(TAG, "HANGUP sent");
     }
 
-    public void setIncomingCallListener(IncomingCallListener l) {
-        listener = l;
+    public void disconnect() {
+        udp.stop();
+        Log.d(TAG, "Disconnected");
     }
 }

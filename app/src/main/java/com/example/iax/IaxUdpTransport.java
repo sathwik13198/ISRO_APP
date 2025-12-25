@@ -9,7 +9,8 @@ import java.net.InetAddress;
 public class IaxUdpTransport {
 
     private static final String TAG = "IAX-UDP";
-    private static final int IAX_PORT = 4569;
+    private static final String HOST = "172.28.27.200"; // WSL IP
+    private static final int PORT = 5000;
 
     private DatagramSocket socket;
     private InetAddress remoteAddr;
@@ -18,12 +19,12 @@ public class IaxUdpTransport {
     public void start(String host) {
         try {
             socket = new DatagramSocket();
-            remoteAddr = InetAddress.getByName(host);
+            remoteAddr = InetAddress.getByName(HOST);
             running = true;
 
             new Thread(this::receiveLoop).start();
 
-            Log.d(TAG, "UDP socket started to " + host);
+            Log.d(TAG, "UDP socket started to " + HOST);
         } catch (Exception e) {
             Log.e(TAG, "UDP start failed", e);
         }
@@ -40,13 +41,26 @@ public class IaxUdpTransport {
     public void send(byte[] data) {
         try {
             DatagramPacket packet =
-                    new DatagramPacket(data, data.length, remoteAddr, IAX_PORT);
+                    new DatagramPacket(data, data.length, remoteAddr, PORT);
             socket.send(packet);
         } catch (Exception e) {
             Log.e(TAG, "UDP send failed", e);
         }
     }
 
+    public void sendCommand(String cmd) {
+        new Thread(() -> {
+            try {
+                byte[] data = cmd.getBytes();
+                DatagramPacket packet =
+                        new DatagramPacket(data, data.length, remoteAddr, PORT);
+                socket.send(packet);
+                Log.d(TAG, "Sent command: " + cmd);
+            } catch (Exception e) {
+                Log.e(TAG, "Send failed", e);
+            }
+        }).start();
+    }
     private void receiveLoop() {
         byte[] buffer = new byte[1024];
 
