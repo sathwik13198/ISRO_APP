@@ -23,7 +23,7 @@ class MyApplication : Application() {
 
         // ---- Initialize MQTT (global singleton) ----
         // Change "android1" to a unique ID on each device (e.g. "android2").
-        mqttManager = MqttManager(myId = "Vivi")
+        mqttManager = MqttManager(myId = "Sath")
         mqttManager.connect()
 
         // ---- Initialize OSMDroid base paths ----

@@ -7,6 +7,7 @@ A modern Android application for real-time device tracking, GPS monitoring, and 
 ### Core Functionality
 - **Real-time GPS Tracking**: Continuous location monitoring with high accuracy
 - **MQTT Communication**: Real-time device discovery and messaging via MQTT protocol
+- **Voice Calling**: IAX-based voice communication between devices via Asterisk server
 - **LAN-Based Map Tiles**: Custom tile server for offline/private network map rendering
 - **Interactive Maps**: Full-screen map mode with pan, zoom, and follow controls
 - **Multi-Device Support**: Track and communicate with multiple devices on a network
@@ -26,6 +27,7 @@ A modern Android application for real-time device tracking, GPS monitoring, and 
 ### Key Highlights
 - ✅ **Offline-First**: Maps and GPS work without internet connection
 - ✅ **Private Network**: LAN tile server for secure, local map tiles
+- ✅ **Voice Communication**: IAX protocol for peer-to-peer voice calls via Asterisk
 - ✅ **Non-Blocking UI**: MQTT connection runs in background, never freezes the app
 - ✅ **Error Resilient**: Graceful handling of MQTT connection failures
 - ✅ **Modern Architecture**: Built with Jetpack Compose, MVVM pattern, and Kotlin Coroutines
@@ -342,7 +344,21 @@ private val attachmentServer = "http://192.168.29.242:8090"
 
 Update this IP address to match your attachment server's IP address.
 
-### 6. Build and Run
+### 6. Set Up Asterisk Server (For Voice Calling)
+
+Voice calling requires an Asterisk server running on your network. See `setup.md` for complete installation and configuration instructions.
+
+**Quick Setup**:
+1. Install Asterisk on Ubuntu: `sudo apt install asterisk`
+2. Configure IAX users in `/etc/asterisk/iax.conf`
+3. Configure dialplan in `/etc/asterisk/extensions.conf`
+4. Update Asterisk IP in `MainActivity.kt` (currently `192.168.29.242`)
+
+**Important**: The Android app uses device IDs as IAX usernames. Ensure IAX users are configured in Asterisk matching your device IDs.
+
+For detailed setup instructions, see `setup.md`.
+
+### 7. Build and Run
 ```bash
 ./gradlew assembleDebug
 ```
@@ -432,6 +448,14 @@ Default configuration in `MqttManager.kt`:
 - **Upload Endpoint**: `/upload`
 - **Download Endpoint**: `/download/{file_id}`
 
+### Asterisk/IAX Settings
+Default configuration in `MainActivity.kt`:
+- **Asterisk IP**: `192.168.29.242` (update to match your Asterisk server)
+- **IAX Port**: `4569` (standard IAX port)
+- **Protocol**: IAX2 (Inter-Asterisk eXchange version 2)
+- **Codec**: G.711 μ-law (ulaw) - 8kHz, 8-bit
+- **No Authentication**: Simple prototype setup (no registration required)
+
 ### Tile Server Settings
 Default configuration in `OfflineMapComposable.kt`:
 - **Server URL**: `http://192.168.29.242:8080/tiles/`
@@ -478,10 +502,11 @@ attachment_server_directory/
 
 ### Permissions
 Required permissions (already configured in `AndroidManifest.xml`):
-- `INTERNET`: MQTT communication and tile fetching
+- `INTERNET`: MQTT communication, tile fetching, and IAX voice calls
 - `ACCESS_NETWORK_STATE`: Network status checking
 - `ACCESS_FINE_LOCATION`: GPS tracking
 - `ACCESS_COARSE_LOCATION`: Approximate location
+- `RECORD_AUDIO`: Voice call audio capture (required for calling)
 - `WRITE_EXTERNAL_STORAGE`: Map tile caching (Android 10 and below)
 
 ### OSMDroid Configuration
@@ -521,6 +546,17 @@ OSMDroid is initialized in:
 - Select a device from the list
 - Type a message and send
 - Messages are delivered via MQTT
+
+#### Voice Calling
+- **Initiate Call**: Tap the call icon (📞) next to a device in the chat interface
+- **Incoming Call**: When receiving a call, an alert dialog appears with Accept/Reject options
+- **Call Interface**: Once call is accepted, a full-screen call interface appears showing:
+  - Peer device ID
+  - Call status ("Call in progress...")
+  - End call button
+- **Call Rejection**: If a call is rejected, a toast notification appears
+- **Voice Communication**: Uses IAX protocol via Asterisk server for audio transmission
+- **Audio**: Automatically routes to earpiece/speaker based on device settings
 
 #### File Attachments
 - Tap the attachment icon (📎) in chat input to select a file
@@ -668,6 +704,34 @@ Tiles follow the **TMS (Tile Map Service)** format:
 **Problem**: "NoClassDefFoundError: LocalBroadcastManager"
 - **Solution**: Already fixed! Using standard MqttClient instead of MqttAndroidClient
 
+### Voice Calling Issues
+
+**Problem**: Call interface doesn't appear when call is accepted
+- **Solution**: 
+  - Verify audio permissions are granted (RECORD_AUDIO)
+  - Check Asterisk server is running and accessible
+  - Verify IAX user exists in Asterisk configuration matching device ID
+  - Check Android logcat for IAX-related errors
+
+**Problem**: No audio during call
+- **Solution**:
+  - Ensure RECORD_AUDIO permission is granted
+  - Check Asterisk server logs: `sudo tail -f /var/log/asterisk/messages`
+  - Verify IAX port 4569 is accessible from Android device
+  - Check audio routing in Android (earpiece vs speaker)
+  - Verify codec negotiation in Asterisk (ulaw should be allowed)
+
+**Problem**: Call doesn't connect
+- **Solution**:
+  - Verify Asterisk IP address in `MainActivity.kt` matches server IP
+  - Check network connectivity: `ping <asterisk-ip>` from Android device
+  - Verify IAX user configuration in `/etc/asterisk/iax.conf`
+  - Check Asterisk IAX peers: `sudo asterisk -rx "iax2 show peers"`
+  - Review Asterisk logs for connection errors
+
+**Problem**: Call rejected toast appears unexpectedly
+- **Solution**: This is normal when the other party rejects the call. Check if they actually rejected it or if there's a network issue.
+
 ## 🔒 Security Notes
 
 - MQTT credentials are hardcoded in `MqttManager.kt` (change for production)
@@ -693,12 +757,17 @@ Tiles follow the **TMS (Tile Map Service)** format:
 
 - [ ] Configurable MQTT broker settings (UI)
 - [ ] Configurable tile server URL (UI)
+- [ ] Configurable Asterisk server settings (UI)
 - [ ] Message encryption
+- [ ] Voice call encryption
 - [ ] Persistent device list
 - [ ] Map tile downloader/integrator
 - [ ] Route tracking and history
 - [ ] Push notifications for messages
 - [ ] Multi-broker support
+- [ ] IAX registration/authentication (currently simplified)
+- [ ] Call history and logs
+- [ ] Multiple codec support (GSM, Opus)
 - [ ] Tile server authentication
 - [ ] Attachment server authentication
 - [ ] Offline tile caching improvements

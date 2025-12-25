@@ -60,6 +60,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.PhoneDisabled
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -145,7 +147,7 @@ class MainActivity : ComponentActivity() {
         config.osmdroidTileCache = File(filesDir, "osmdroid")
     
         val mqttManager = (application as MyApplication).mqttManager
-        iaxManager = IaxManager("192.168.29.242")
+        iaxManager = IaxManager("192.168.29.242") //asterisk ip
         iaxManager.connect()
 
         callController = CallController(
@@ -296,20 +298,40 @@ private fun IsroApp(
     // Call event handling
     val callEvent by mqttManager.callEvents.collectAsState()
     var incomingCallFrom by remember { mutableStateOf<String?>(null) }
+    var activeCallPeerId by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(callEvent) {
         when (val event = callEvent) {
             is CallEvent.Incoming -> incomingCallFrom = event.from
-            is CallEvent.Rejected -> incomingCallFrom = null
+            is CallEvent.Rejected -> {
+                incomingCallFrom = null
+                // Show toast for rejected call
+                Toast.makeText(context, "Call rejected by ${event.from}", Toast.LENGTH_SHORT).show()
+            }
             is CallEvent.Ended -> {
                 callController.onCallEnded()
                 incomingCallFrom = null
+                activeCallPeerId = null
             }
             is CallEvent.Accepted -> {
                 callController.onCallAccepted(event.from)
                 incomingCallFrom = null
+                activeCallPeerId = event.from
+                // Call interface will show automatically when activeCallPeerId is set
             }
             null -> {}
+        }
+    }
+
+    // Track IAX call state to update UI
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(500) // Check every 500ms
+            val currentState = callController.getCallState()
+            if (currentState == com.example.iax.IaxManager.CallState.IDLE && activeCallPeerId != null) {
+                // Call ended - clear UI
+                activeCallPeerId = null
+            }
         }
     }
     
@@ -770,6 +792,7 @@ private fun IsroApp(
                     TextButton(onClick = {
                         callController.acceptCall(caller)
                         incomingCallFrom = null
+                        activeCallPeerId = caller
                     }) { Text("Accept") }
                 },
                 dismissButton = {
@@ -779,6 +802,19 @@ private fun IsroApp(
                     }) { Text("Reject") }
                 }
             )
+        }
+
+        // 📞 Active call interface
+        activeCallPeerId?.let { peerId ->
+            if (callController.isInCall()) {
+                ActiveCallInterface(
+                    peerId = peerId,
+                    onEndCall = {
+                        callController.endCall(peerId)
+                        activeCallPeerId = null
+                    }
+                )
+            }
         }
     }
 }
@@ -1263,6 +1299,7 @@ private fun ChatPane(
                 device?.let {
                     IconButton(onClick = {
                         callController.outgoingCall(it.clientId)
+                        // Will show call interface when CALL_ACCEPT is received
                     }) {
                         Icon(Icons.Default.Call, contentDescription = "Call")
                     }
@@ -1465,6 +1502,100 @@ private fun formatSize(bytes: Long): String {
     val kb = bytes / 1024.0
     val mb = kb / 1024.0
     return if (mb >= 1) "%.1f MB".format(mb) else "%.0f KB".format(kb)
+}
+
+@Composable
+private fun ActiveCallInterface(
+    peerId: String,
+    onEndCall: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.7f)),
+        contentAlignment = Alignment.Center
+    ) {
+        ElevatedCard(
+            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
+            colors = CardDefaults.elevatedCardColors(
+                containerColor = Surface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
+                // Call icon
+                Box(
+                    modifier = Modifier
+                        .size(120.dp)
+                        .background(
+                            color = PrimaryBlue.copy(alpha = 0.2f),
+                            shape = CircleShape
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Phone,
+                        contentDescription = "Call",
+                        modifier = Modifier.size(64.dp),
+                        tint = PrimaryBlue
+                    )
+                }
+
+                // Peer ID
+                Text(
+                    text = "Call with",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = TextSecondary
+                )
+                Text(
+                    text = peerId,
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
+
+                // Call status
+                Text(
+                    text = "Call in progress...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // End call button
+                IconButton(
+                    onClick = onEndCall,
+                    modifier = Modifier
+                        .size(64.dp)
+                        .background(
+                            color = Color.Red.copy(alpha = 0.2f),
+                            shape = CircleShape
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PhoneDisabled,
+                        contentDescription = "End Call",
+                        modifier = Modifier.size(32.dp),
+                        tint = Color.Red
+                    )
+                }
+                Text(
+                    text = "End Call",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.Red
+                )
+            }
+        }
+    }
 }
 
 @Composable
