@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -123,6 +124,7 @@ import com.example.isro_app.ui.theme.TextSecondary
 import com.example.isro_app.mqtt.MqttManager
 import com.example.isro_app.mqtt.MqttConnectionState
 import com.example.isro_app.mqtt.CallEvent
+import com.example.isro_app.settings.MqttSettingsScreen
 import com.example.isro_app.MapDevice
 import android.widget.Toast
 import androidx.compose.material3.CircularProgressIndicator
@@ -290,6 +292,7 @@ private fun IsroApp(
     val myDeviceId = mqttManager.myId
 
     var isMapFullscreen by rememberSaveable { mutableStateOf(false) }
+    var showSettingsDialog by rememberSaveable { mutableStateOf(false) }
     
     var selectedDeviceId by rememberSaveable { 
         mutableStateOf("")
@@ -632,8 +635,8 @@ private fun IsroApp(
                         IconButton(onClick = { /* refresh hook */ }) {
                             Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                         }
-                        IconButton(onClick = { /* settings hook */ }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                        IconButton(onClick = { showSettingsDialog = true }) {
+                            Icon(Icons.Default.Settings, contentDescription = "MQTT Settings")
                         }
                     }
                 )
@@ -815,6 +818,15 @@ private fun IsroApp(
                     }
                 )
             }
+        }
+
+        // ⚙️ MQTT Settings Dialog
+        if (showSettingsDialog) {
+            MqttSettingsScreen(
+                mqttManager = mqttManager,
+                context = context,
+                onDismiss = { showSettingsDialog = false }
+            )
         }
     }
 }

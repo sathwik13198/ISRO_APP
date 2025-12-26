@@ -58,10 +58,10 @@ sealed class CallEvent {
 // -------- MQTT MANAGER --------
 
 class MqttManager(
-    val myId: String
+    val myId: String,
+    private var settings: MqttSettings = MqttSettings()
 ) {
 
-    private val brokerUri = "tcp://192.168.29.239:1883"
     private val attachmentServer = "http://192.168.29.242:8090"
 
     private val gpsTopic = "gps/location"
@@ -93,20 +93,71 @@ class MqttManager(
     private val _callEvents = MutableStateFlow<CallEvent?>(null)
     val callEvents: StateFlow<CallEvent?> = _callEvents
 
+    // -------- DISCONNECT --------
+
+    fun disconnect() {
+        scope.launch {
+            try {
+                if (::mqttClient.isInitialized && mqttClient.isConnected) {
+                    mqttClient.unsubscribe(gpsTopic)
+                    mqttClient.unsubscribe(inboxTopic)
+                    mqttClient.disconnect()
+                    Log.d("MQTT", "Disconnected")
+                }
+            } catch (e: Exception) {
+                Log.e("MQTT", "Error during disconnect", e)
+            } finally {
+                _connectionState.value = MqttConnectionState.Idle
+            }
+        }
+    }
+
+    // -------- RECONNECT --------
+
+    fun reconnect(newSettings: MqttSettings) {
+        scope.launch {
+            try {
+                disconnect()
+                // Wait a bit for disconnect to complete
+                delay(500)
+                settings = newSettings
+                connect()
+            } catch (e: Exception) {
+                Log.e("MQTT", "Reconnection failed", e)
+                _connectionState.value = MqttConnectionState.Error
+            }
+        }
+    }
+
     // -------- CONNECT --------
 
     fun connect() {
         scope.launch {
             try {
+                // Validate broker URI before attempting connection
+                if (!MqttSettingsManager.isValidBrokerUri(settings.brokerUri)) {
+                    Log.e("MQTT", "Invalid broker URI: ${settings.brokerUri}")
+                    _connectionState.value = MqttConnectionState.Error
+                    return@launch
+                }
+
                 _connectionState.value = MqttConnectionState.Connecting
 
-                mqttClient = MqttClient(brokerUri, myId, null)
+                mqttClient = MqttClient(settings.brokerUri, myId, null)
 
                 val options = MqttConnectOptions().apply {
                     isCleanSession = true
                     isAutomaticReconnect = true
                     connectionTimeout = 10
                     keepAliveInterval = 60
+                    
+                    // Only set username/password if they are not empty
+                    if (settings.username.isNotBlank()) {
+                        userName = settings.username
+                    }
+                    if (settings.password.isNotBlank()) {
+                        password = settings.password.toCharArray()
+                    }
                 }
 
                 mqttClient.setCallback(object : MqttCallback {
@@ -256,7 +307,7 @@ class MqttManager(
     // -------- GPS --------
 
     fun publishGps(lat: Double, lon: Double, timestamp: String) {
-        if (!mqttClient.isConnected) return
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
 
         val json = JSONObject().apply {
             put("sender_id", myId)
@@ -274,7 +325,7 @@ class MqttManager(
     // -------- SEND CHAT --------
 
     fun sendChat(peerId: String, text: String) {
-        if (!mqttClient.isConnected) return
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
 
         val msg = "$myId: $text"
         mqttClient.publish(
@@ -377,26 +428,27 @@ class MqttManager(
     // -------- CALL SIGNALING SEND --------
 
     fun sendCallRequest(peerId: String) {
-        if (!mqttClient.isConnected) return
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
         sendCallSignal(peerId, "CALL_REQUEST")
     }
 
     fun sendCallAccept(peerId: String) {
-        if (!mqttClient.isConnected) return
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
         sendCallSignal(peerId, "CALL_ACCEPT")
     }
 
     fun sendCallReject(peerId: String) {
-        if (!mqttClient.isConnected) return
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
         sendCallSignal(peerId, "CALL_REJECT")
     }
 
     fun sendCallEnd(peerId: String) {
-        if (!mqttClient.isConnected) return
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
         sendCallSignal(peerId, "CALL_END")
     }
 
     private fun sendCallSignal(peerId: String, type: String) {
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
         val payload = JSONObject().apply {
             put("type", type)
             put("from", myId)
