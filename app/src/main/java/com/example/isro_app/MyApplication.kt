@@ -24,10 +24,12 @@ class MyApplication : Application() {
 
         // ---- Load MQTT settings from SharedPreferences ----
         val mqttSettings = MqttSettingsManager.loadSettings(applicationContext)
+        
+        // ---- Load device ID from SharedPreferences ----
+        val deviceId = MqttSettingsManager.loadDeviceId(applicationContext)
 
         // ---- Initialize MQTT (global singleton) ----
-        // Change "android1" to a unique ID on each device (e.g. "android2").
-        mqttManager = MqttManager(myId = "Sathw", settings = mqttSettings)
+        mqttManager = MqttManager(myId = deviceId, settings = mqttSettings)
         mqttManager.connect()
 
         // ---- Initialize OSMDroid base paths ----

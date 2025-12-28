@@ -29,14 +29,26 @@ fun MqttSettingsScreen(
     
     // Load current settings
     val currentSettings = remember { MqttSettingsManager.loadSettings(context) }
+    val currentDeviceId = remember { MqttSettingsManager.loadDeviceId(context) }
     
     // Form state
+    var deviceId by rememberSaveable { mutableStateOf(currentDeviceId) }
     var brokerUri by rememberSaveable { mutableStateOf(currentSettings.brokerUri) }
     
     // Validation state
+    var deviceIdError by remember { mutableStateOf<String?>(null) }
     var brokerUriError by remember { mutableStateOf<String?>(null) }
     var isSaving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    
+    // Validate device ID on change
+    LaunchedEffect(deviceId) {
+        deviceIdError = if (deviceId.isNotBlank() && !MqttSettingsManager.isValidDeviceId(deviceId)) {
+            MqttSettingsManager.getDeviceIdErrorMessage(deviceId)
+        } else {
+            null
+        }
+    }
     
     // Validate broker URI on change
     LaunchedEffect(brokerUri) {
@@ -47,7 +59,9 @@ fun MqttSettingsScreen(
         }
     }
     
-    val isValid = brokerUri.isNotBlank() && 
+    val isValid = deviceId.isNotBlank() &&
+                  MqttSettingsManager.isValidDeviceId(deviceId) &&
+                  brokerUri.isNotBlank() && 
                   MqttSettingsManager.isValidBrokerUri(brokerUri) &&
                   !isSaving
     
@@ -69,7 +83,7 @@ fun MqttSettingsScreen(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text("MQTT Broker Settings")
+            Text("MQTT & Device Settings")
         },
         text = {
             Column(
@@ -104,6 +118,28 @@ fun MqttSettingsScreen(
                     }
                 }
                 
+                // Device ID
+                OutlinedTextField(
+                    value = deviceId,
+                    onValueChange = { deviceId = it },
+                    label = { Text("Device ID") },
+                    placeholder = { Text("e.g., Sathwik, Vivek") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    isError = deviceIdError != null,
+                    supportingText = {
+                        if (deviceIdError != null) {
+                            Text(
+                                text = deviceIdError!!,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        } else {
+                            Text("Your device name (letters, numbers, hyphens, underscores only)")
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
+                )
+                
                 // Broker URI
                 OutlinedTextField(
                     value = brokerUri,
@@ -137,8 +173,21 @@ fun MqttSettingsScreen(
                             username = "", // No authentication
                             password = "" // No authentication
                         )
+                        val newDeviceId = deviceId.trim()
+                        val deviceIdChanged = newDeviceId != currentDeviceId
+                        
+                        // Save settings
                         MqttSettingsManager.saveSettings(context, newSettings)
-                        mqttManager.reconnect(newSettings)
+                        MqttSettingsManager.saveDeviceId(context, newDeviceId)
+                        
+                        // If device ID changed, update it (this will also reconnect)
+                        if (deviceIdChanged) {
+                            mqttManager.updateDeviceId(newDeviceId)
+                        } else {
+                            // Only reconnect if MQTT settings changed
+                            mqttManager.reconnect(newSettings)
+                        }
+                        
                         // Reset saving state after a delay
                         scope.launch {
                             delay(2000)

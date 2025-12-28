@@ -58,14 +58,14 @@ sealed class CallEvent {
 // -------- MQTT MANAGER --------
 
 class MqttManager(
-    val myId: String,
+    var myId: String,
     private var settings: MqttSettings = MqttSettings()
 ) {
 
-    private val attachmentServer = "http://192.168.29.242:8090"
+    private val attachmentServer = "http://10.122.97.180:8090"
 
     private val gpsTopic = "gps/location"
-    private val inboxTopic = "$myId/inbox"
+    private var inboxTopic = "$myId/inbox"
 
     private lateinit var mqttClient: MqttClient
 
@@ -124,6 +124,48 @@ class MqttManager(
                 connect()
             } catch (e: Exception) {
                 Log.e("MQTT", "Reconnection failed", e)
+                _connectionState.value = MqttConnectionState.Error
+            }
+        }
+    }
+
+    // -------- UPDATE DEVICE ID --------
+
+    fun updateDeviceId(newDeviceId: String) {
+        scope.launch {
+            try {
+                val oldDeviceId = myId
+                
+                // Publish device ID change announcement before disconnecting
+                if (::mqttClient.isInitialized && mqttClient.isConnected) {
+                    val changeMessage = JSONObject().apply {
+                        put("type", "device_id_changed")
+                        put("old_id", oldDeviceId)
+                        put("new_id", newDeviceId)
+                    }
+                    
+                    mqttClient.publish(
+                        gpsTopic,
+                        MqttMessage(changeMessage.toString().toByteArray()).apply { qos = 1 }
+                    )
+                    Log.d("MQTT", "Published device ID change: $oldDeviceId -> $newDeviceId")
+                    
+                    // Wait a bit to ensure message is sent
+                    delay(200)
+                }
+                
+                // Disconnect
+                disconnect()
+                delay(500)
+                
+                // Update device ID and inbox topic
+                myId = newDeviceId
+                inboxTopic = "$myId/inbox"
+                
+                // Reconnect with new device ID
+                connect()
+            } catch (e: Exception) {
+                Log.e("MQTT", "Device ID update failed", e)
                 _connectionState.value = MqttConnectionState.Error
             }
         }
@@ -213,6 +255,23 @@ class MqttManager(
     private fun handleGps(payload: String) {
         try {
             val json = JSONObject(payload)
+            
+            // Check if this is a device ID change announcement
+            if (json.optString("type") == "device_id_changed") {
+                val oldId = json.optString("old_id")
+                val newId = json.optString("new_id")
+                
+                if (oldId.isNotBlank() && newId.isNotBlank()) {
+                    Log.d("MQTT", "Device ID changed: $oldId -> $newId")
+                    // Remove old device ID from device list immediately
+                    _devices.value = _devices.value.toMutableMap().apply {
+                        remove(oldId)
+                    }
+                }
+                return
+            }
+            
+            // Regular GPS location message
             val id = json.getString("sender_id")
 
             val location = DeviceLocation(
