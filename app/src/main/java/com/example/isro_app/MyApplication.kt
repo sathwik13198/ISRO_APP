@@ -4,6 +4,8 @@ import android.app.Application
 import android.os.Environment
 import androidx.preference.PreferenceManager
 import com.example.isro_app.mqtt.MqttManager
+import com.example.isro_app.mqtt.MqttSettingsManager
+import com.example.isro_app.settings.ServerSettingsManager
 import org.osmdroid.config.Configuration
 import java.io.File
 
@@ -21,9 +23,21 @@ class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        // ---- Load MQTT settings from SharedPreferences ----
+        val mqttSettings = MqttSettingsManager.loadSettings(applicationContext)
+        
+        // ---- Load device ID from SharedPreferences ----
+        val deviceId = MqttSettingsManager.loadDeviceId(applicationContext)
+        
+        // ---- Load server settings from SharedPreferences ----
+        val serverSettings = ServerSettingsManager.loadSettings(applicationContext)
+
         // ---- Initialize MQTT (global singleton) ----
-        // Change "android1" to a unique ID on each device (e.g. "android2").
-        mqttManager = MqttManager(myId = "Vivek")
+        mqttManager = MqttManager(
+            myId = deviceId,
+            settings = mqttSettings,
+            attachmentServer = serverSettings.attachmentServerUrl
+        )
         mqttManager.connect()
 
         // ---- Initialize OSMDroid base paths ----

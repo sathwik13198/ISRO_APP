@@ -11,6 +11,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -18,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalInspectionMode
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.isro_app.location.LocationState
@@ -25,15 +27,18 @@ import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.tileprovider.tilesource.XYTileSource
+import com.example.isro_app.settings.ServerSettingsManager
 
-private val LanTileSource = XYTileSource(
-    "LAN-TILES",
-    0,          // min zoom
-    14,         // max zoom
-    256,        // tile size
-    ".png",
-    arrayOf("http://192.168.29.242:8080/tiles/")
-)
+fun createTileSource(tileServerUrl: String): XYTileSource {
+    return XYTileSource(
+        "LAN-TILES",
+        0,          // min zoom
+        14,         // max zoom
+        256,        // tile size
+        ".png",
+        arrayOf(tileServerUrl)
+    )
+}
 
 data class MapDevice(
     val id: String,
@@ -46,6 +51,7 @@ fun OfflineMapView(
     devices: List<MapDevice>,
     currentLocation: LocationState,
     myDeviceId: String,
+    tileServerUrl: String = ServerSettingsManager.loadSettings(androidx.compose.ui.platform.LocalContext.current).tileServerUrl,
     modifier: Modifier = Modifier
 ) {
     val isPreview = LocalInspectionMode.current
@@ -69,6 +75,18 @@ fun OfflineMapView(
     val markerMap = remember { mutableStateMapOf<String, Marker>() }
     val selfMarker = remember { mutableStateOf<Marker?>(null) }
     val mapViewState = remember { mutableStateOf<MapView?>(null) }
+    val currentTileServerUrl = remember { mutableStateOf(tileServerUrl) }
+    
+    // Update tile source when URL changes
+    LaunchedEffect(tileServerUrl) {
+        if (currentTileServerUrl.value != tileServerUrl) {
+            currentTileServerUrl.value = tileServerUrl
+            mapViewState.value?.let { mapView ->
+                val newTileSource = createTileSource(tileServerUrl)
+                mapView.setTileSource(newTileSource)
+            }
+        }
+    }
 
     Box(
         modifier = modifier.fillMaxSize()
@@ -79,8 +97,9 @@ fun OfflineMapView(
                 MapView(ctx).apply {
                     mapViewState.value = this
 
-                    // ✅ Use LAN tile server
-                    setTileSource(LanTileSource)
+                    // ✅ Use LAN tile server (dynamic)
+                    val tileSource = createTileSource(currentTileServerUrl.value)
+                    setTileSource(tileSource)
 
                     // ✅ Allow LAN HTTP (not general internet)
                     setUseDataConnection(true)

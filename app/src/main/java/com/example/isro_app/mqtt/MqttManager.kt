@@ -46,17 +46,25 @@ sealed class ChatItem {
     ) : ChatItem()
 }
 
+// -------- CALL SIGNALING --------
+
+sealed class CallEvent {
+    data class Incoming(val from: String) : CallEvent()
+    data class Accepted(val from: String) : CallEvent()
+    data class Rejected(val from: String) : CallEvent()
+    data class Ended(val from: String) : CallEvent()
+}
+
 // -------- MQTT MANAGER --------
 
 class MqttManager(
-    val myId: String
+    var myId: String,
+    private var settings: MqttSettings = MqttSettings(),
+    private var attachmentServer: String = "http://192.168.29.242:8090"
 ) {
 
-    private val brokerUri = "tcp://192.168.29.239:1883"
-    private val attachmentServer = "http://192.168.29.242:8090"
-
     private val gpsTopic = "gps/location"
-    private val inboxTopic = "$myId/inbox"
+    private var inboxTopic = "$myId/inbox"
 
     private lateinit var mqttClient: MqttClient
 
@@ -81,20 +89,116 @@ class MqttManager(
         MutableStateFlow<MqttConnectionState>(MqttConnectionState.Idle)
     val connectionState: StateFlow<MqttConnectionState> = _connectionState
 
+    private val _callEvents = MutableStateFlow<CallEvent?>(null)
+    val callEvents: StateFlow<CallEvent?> = _callEvents
+
+    // -------- DISCONNECT --------
+
+    fun disconnect() {
+        scope.launch {
+            try {
+                if (::mqttClient.isInitialized && mqttClient.isConnected) {
+                    mqttClient.unsubscribe(gpsTopic)
+                    mqttClient.unsubscribe(inboxTopic)
+                    mqttClient.disconnect()
+                    Log.d("MQTT", "Disconnected")
+                }
+            } catch (e: Exception) {
+                Log.e("MQTT", "Error during disconnect", e)
+            } finally {
+                _connectionState.value = MqttConnectionState.Idle
+            }
+        }
+    }
+
+    // -------- RECONNECT --------
+
+    fun reconnect(newSettings: MqttSettings) {
+        scope.launch {
+            try {
+                disconnect()
+                // Wait a bit for disconnect to complete
+                delay(500)
+                settings = newSettings
+                connect()
+            } catch (e: Exception) {
+                Log.e("MQTT", "Reconnection failed", e)
+                _connectionState.value = MqttConnectionState.Error
+            }
+        }
+    }
+
+    // -------- UPDATE DEVICE ID --------
+
+    fun updateDeviceId(newDeviceId: String) {
+        scope.launch {
+            try {
+                val oldDeviceId = myId
+                
+                // Publish device ID change announcement before disconnecting
+                if (::mqttClient.isInitialized && mqttClient.isConnected) {
+                    val changeMessage = JSONObject().apply {
+                        put("type", "device_id_changed")
+                        put("old_id", oldDeviceId)
+                        put("new_id", newDeviceId)
+                    }
+                    
+                    mqttClient.publish(
+                        gpsTopic,
+                        MqttMessage(changeMessage.toString().toByteArray()).apply { qos = 1 }
+                    )
+                    Log.d("MQTT", "Published device ID change: $oldDeviceId -> $newDeviceId")
+                    
+                    // Wait a bit to ensure message is sent
+                    delay(200)
+                }
+                
+                // Disconnect
+                disconnect()
+                delay(500)
+                
+                // Update device ID and inbox topic
+                myId = newDeviceId
+                inboxTopic = "$myId/inbox"
+                
+                // Reconnect with new device ID
+                connect()
+            } catch (e: Exception) {
+                Log.e("MQTT", "Device ID update failed", e)
+                _connectionState.value = MqttConnectionState.Error
+            }
+        }
+    }
+
     // -------- CONNECT --------
 
     fun connect() {
         scope.launch {
             try {
+                // Validate broker URI before attempting connection
+                if (!MqttSettingsManager.isValidBrokerUri(settings.brokerUri)) {
+                    Log.e("MQTT", "Invalid broker URI: ${settings.brokerUri}")
+                    _connectionState.value = MqttConnectionState.Error
+                    return@launch
+                }
+
                 _connectionState.value = MqttConnectionState.Connecting
 
-                mqttClient = MqttClient(brokerUri, myId, null)
+                mqttClient = MqttClient(settings.brokerUri, myId, null)
 
                 val options = MqttConnectOptions().apply {
                     isCleanSession = true
                     isAutomaticReconnect = true
                     connectionTimeout = 10
                     keepAliveInterval = 60
+                    
+                    // Only set username/password if they are not empty
+                    if (settings.username.isNotBlank()) {
+                        userName = settings.username
+                    }
+                    if (settings.password.isNotBlank()) {
+                        password = settings.password.toCharArray()
+                    }
                 }
 
                 mqttClient.setCallback(object : MqttCallback {
@@ -150,6 +254,23 @@ class MqttManager(
     private fun handleGps(payload: String) {
         try {
             val json = JSONObject(payload)
+            
+            // Check if this is a device ID change announcement
+            if (json.optString("type") == "device_id_changed") {
+                val oldId = json.optString("old_id")
+                val newId = json.optString("new_id")
+                
+                if (oldId.isNotBlank() && newId.isNotBlank()) {
+                    Log.d("MQTT", "Device ID changed: $oldId -> $newId")
+                    // Remove old device ID from device list immediately
+                    _devices.value = _devices.value.toMutableMap().apply {
+                        remove(oldId)
+                    }
+                }
+                return
+            }
+            
+            // Regular GPS location message
             val id = json.getString("sender_id")
 
             val location = DeviceLocation(
@@ -165,13 +286,48 @@ class MqttManager(
         } catch (_: Exception) {}
     }
 
-    // -------- INBOX (CHAT + ATTACHMENTS) --------
+    // -------- INBOX (CHAT + ATTACHMENTS + CALL SIGNALING) --------
 
     private fun handleInbox(payload: String) {
         try {
             val json = JSONObject(payload)
-    
-            // Attachment message
+
+            // ===============================
+            // CALL SIGNALING (MQTT)
+            // ===============================
+            when (json.optString("type")) {
+                "CALL_REQUEST" -> {
+                    val from = json.getString("from")
+                    if (from != myId) {
+                        Log.d("CALL", "Incoming call from $from")
+                        _callEvents.value = CallEvent.Incoming(from)
+                    }
+                    return
+                }
+
+                "CALL_ACCEPT" -> {
+                    val from = json.getString("from")
+                    Log.d("CALL", "Call accepted by $from")
+                    _callEvents.value = CallEvent.Accepted(from)
+                    return
+                }
+
+                "CALL_REJECT" -> {
+                    val from = json.getString("from")
+                    Log.d("CALL", "Call rejected by $from")
+                    _callEvents.value = CallEvent.Rejected(from)
+                    return
+                }
+
+                "CALL_END" -> {
+                    val from = json.getString("from")
+                    Log.d("CALL", "Call ended by $from")
+                    _callEvents.value = CallEvent.Ended(from)
+                    return
+                }
+            }
+
+            // ===== EXISTING ATTACHMENT LOGIC =====
             if (json.optString("type") == "attachment") {
                 val sender = json.getString("sender")
                 if (sender == myId) return   // ignore self echo
@@ -189,6 +345,7 @@ class MqttManager(
             // Not JSON → continue as text
         }
     
+        // ===== EXISTING TEXT LOGIC =====
         // Text message: "sender: message"
         val split = payload.split(":", limit = 2)
         if (split.size == 2) {
@@ -208,7 +365,7 @@ class MqttManager(
     // -------- GPS --------
 
     fun publishGps(lat: Double, lon: Double, timestamp: String) {
-        if (!mqttClient.isConnected) return
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
 
         val json = JSONObject().apply {
             put("sender_id", myId)
@@ -226,7 +383,7 @@ class MqttManager(
     // -------- SEND CHAT --------
 
     fun sendChat(peerId: String, text: String) {
-        if (!mqttClient.isConnected) return
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
 
         val msg = "$myId: $text"
         mqttClient.publish(
@@ -238,6 +395,10 @@ class MqttManager(
     }
 
     // -------- ATTACHMENT UPLOAD + MQTT --------
+    
+    fun updateAttachmentServer(serverUrl: String) {
+        attachmentServer = serverUrl
+    }
 
     private fun getFileName(uri: Uri, resolver: ContentResolver): String {
         resolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -324,5 +485,40 @@ class MqttManager(
                 downloadUrl = downloadUrl
             )
         }
+    }
+
+    // -------- CALL SIGNALING SEND --------
+
+    fun sendCallRequest(peerId: String) {
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
+        sendCallSignal(peerId, "CALL_REQUEST")
+    }
+
+    fun sendCallAccept(peerId: String) {
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
+        sendCallSignal(peerId, "CALL_ACCEPT")
+    }
+
+    fun sendCallReject(peerId: String) {
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
+        sendCallSignal(peerId, "CALL_REJECT")
+    }
+
+    fun sendCallEnd(peerId: String) {
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
+        sendCallSignal(peerId, "CALL_END")
+    }
+
+    private fun sendCallSignal(peerId: String, type: String) {
+        if (!::mqttClient.isInitialized || !mqttClient.isConnected) return
+        val payload = JSONObject().apply {
+            put("type", type)
+            put("from", myId)
+            put("to", peerId)
+        }
+        mqttClient.publish(
+            "$peerId/inbox",
+            MqttMessage(payload.toString().toByteArray()).apply { qos = 1 }
+        )
     }
 }

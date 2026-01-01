@@ -3,11 +3,14 @@ package com.example.isro_app
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.collectAsState
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.content.Intent
+import android.media.AudioManager
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.collectAsState
@@ -43,6 +46,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Attachment
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FilterList
@@ -50,16 +54,21 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.PhoneDisabled
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -69,11 +78,13 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.rememberDrawerState
@@ -103,6 +114,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.example.iax.IaxManager
+import com.example.isro_app.call.CallController
 import com.example.isro_app.ui.theme.Divider
 import com.example.isro_app.ui.theme.ISRO_APPTheme
 import com.example.isro_app.ui.theme.PrimaryBlue
@@ -112,6 +125,10 @@ import com.example.isro_app.ui.theme.TextPrimary
 import com.example.isro_app.ui.theme.TextSecondary
 import com.example.isro_app.mqtt.MqttManager
 import com.example.isro_app.mqtt.MqttConnectionState
+import com.example.isro_app.mqtt.CallEvent
+import com.example.isro_app.settings.MqttSettingsScreen
+import com.example.isro_app.settings.ServerSettingsScreen
+import com.example.isro_app.settings.ServerSettingsManager
 import com.example.isro_app.MapDevice
 import android.widget.Toast
 import androidx.compose.material3.CircularProgressIndicator
@@ -124,6 +141,26 @@ import java.util.Locale
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
+    private lateinit var iaxManager: IaxManager
+    lateinit var callController: CallController
+    
+    fun reconnectIax(newIp: String) {
+        try {
+            if (::iaxManager.isInitialized) {
+                iaxManager.hangup()
+            }
+            iaxManager = IaxManager(newIp)
+            iaxManager.connect()
+            callController = CallController(
+                context = this,
+                mqtt = (application as MyApplication).mqttManager,
+                iax = iaxManager
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Failed to reconnect IAX", e)
+        }
+    }
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
     
@@ -133,15 +170,54 @@ class MainActivity : ComponentActivity() {
         config.osmdroidTileCache = File(filesDir, "osmdroid")
     
         val mqttManager = (application as MyApplication).mqttManager
+        val serverSettings = ServerSettingsManager.loadSettings(this)
+        iaxManager = IaxManager(serverSettings.asteriskServerIp)
+        iaxManager.connect()
+
+        callController = CallController(
+            context = this,
+            mqtt = mqttManager,
+            iax = iaxManager
+        )
+
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.RECORD_AUDIO),
+            101
+        )
+
     
         enableEdgeToEdge()
         setContent {
             ISRO_APPTheme {
-                IsroApp(mqttManager = mqttManager)
+                IsroApp(
+                    mqttManager = mqttManager,
+                    callController = callController
+                )
             }
         }
     }
     
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == 101 &&
+            grantResults.isNotEmpty() &&
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        ) {
+            // Permission granted - audio will start only after CALL_ACCEPT
+        } else {
+            Toast.makeText(
+                this,
+                "Microphone permission required for calling",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
 }
 
 private enum class WindowSize { Compact, Medium, Expanded }
@@ -193,12 +269,17 @@ private data class Message(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun IsroApp(
-    mqttManager: MqttManager
+    mqttManager: MqttManager,
+    callController: CallController
 ) {
     val locationViewModel: LocationViewModel = viewModel()
     val locationState by locationViewModel.location.collectAsState()
     val context = LocalContext.current
     val windowSize = rememberWindowSize()
+    
+    // Server settings state
+    var tileServerUrl by remember { mutableStateOf(ServerSettingsManager.loadSettings(context).tileServerUrl) }
+    var asteriskServerIp by remember { mutableStateOf(ServerSettingsManager.loadSettings(context).asteriskServerIp) }
 
     // Get MQTT connection state from app-wide manager
     val mqttState by mqttManager.connectionState.collectAsState()
@@ -237,9 +318,52 @@ private fun IsroApp(
     val myDeviceId = mqttManager.myId
 
     var isMapFullscreen by rememberSaveable { mutableStateOf(false) }
+    var showSettingsDialog by rememberSaveable { mutableStateOf(false) }
+    var showServerSettingsDialog by rememberSaveable { mutableStateOf(false) }
+    var showMenu by rememberSaveable { mutableStateOf(false) }
     
     var selectedDeviceId by rememberSaveable { 
         mutableStateOf("")
+    }
+
+    // Call event handling
+    val callEvent by mqttManager.callEvents.collectAsState()
+    var incomingCallFrom by remember { mutableStateOf<String?>(null) }
+    var activeCallPeerId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(callEvent) {
+        when (val event = callEvent) {
+            is CallEvent.Incoming -> incomingCallFrom = event.from
+            is CallEvent.Rejected -> {
+                incomingCallFrom = null
+                // Show toast for rejected call
+                Toast.makeText(context, "Call rejected by ${event.from}", Toast.LENGTH_SHORT).show()
+            }
+            is CallEvent.Ended -> {
+                callController.onCallEnded()
+                incomingCallFrom = null
+                activeCallPeerId = null
+            }
+            is CallEvent.Accepted -> {
+                callController.onCallAccepted(event.from)
+                incomingCallFrom = null
+                activeCallPeerId = event.from
+                // Call interface will show automatically when activeCallPeerId is set
+            }
+            null -> {}
+        }
+    }
+
+    // Track IAX call state to update UI
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(500) // Check every 500ms
+            val currentState = callController.getCallState()
+            if (currentState == com.example.iax.IaxManager.CallState.IDLE && activeCallPeerId != null) {
+                // Call ended - clear UI
+                activeCallPeerId = null
+            }
+        }
     }
     
     // Initialize selectedDeviceId when devices become available
@@ -539,8 +663,32 @@ private fun IsroApp(
                         IconButton(onClick = { /* refresh hook */ }) {
                             Icon(Icons.Default.Refresh, contentDescription = "Refresh")
                         }
-                        IconButton(onClick = { /* settings hook */ }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                        IconButton(onClick = { showSettingsDialog = true }) {
+                            Icon(Icons.Default.Settings, contentDescription = "MQTT Settings")
+                        }
+                        Box {
+                            IconButton(onClick = { showMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                            }
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("MQTT") },
+                                    onClick = {
+                                        showMenu = false
+                                        showSettingsDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Configure Server") },
+                                    onClick = {
+                                        showMenu = false
+                                        showServerSettingsDialog = true
+                                    }
+                                )
+                            }
                         }
                     }
                 )
@@ -553,12 +701,13 @@ private fun IsroApp(
                         .fillMaxSize()
                         .padding(paddingValues)
                 ) {
-                    OfflineMapView(
+                            OfflineMapView(
                         devices = filtered.map {
                             MapDevice(it.clientId, it.lat, it.lon)
                         },
                         currentLocation = locationState,
                         myDeviceId = myDeviceId,
+                        tileServerUrl = tileServerUrl,
                         modifier = Modifier.fillMaxSize()
                     )
 
@@ -610,8 +759,10 @@ private fun IsroApp(
                             },
                             locationState = locationState,
                             myDeviceId = myDeviceId,
+                            tileServerUrl = tileServerUrl,
                             onFullMap = { isMapFullscreen = true },
-                            onPickFile = pickFile
+                            onPickFile = pickFile,
+                            callController = callController
                         )
 
                         WindowSize.Medium -> MediumLayout(
@@ -641,8 +792,10 @@ private fun IsroApp(
                             },
                             locationState = locationState,
                             myDeviceId = myDeviceId,
+                            tileServerUrl = tileServerUrl,
                             onFullMap = { isMapFullscreen = true },
-                            onPickFile = pickFile
+                            onPickFile = pickFile,
+                            callController = callController
                         )
 
                         WindowSize.Expanded -> ExpandedLayout(
@@ -670,8 +823,10 @@ private fun IsroApp(
                             },
                             locationState = locationState,
                             myDeviceId = myDeviceId,
+                            tileServerUrl = tileServerUrl,
                             onFullMap = { isMapFullscreen = true },
-                            onPickFile = pickFile
+                            onPickFile = pickFile,
+                            callController = callController
                         )
                     }
 
@@ -681,6 +836,72 @@ private fun IsroApp(
                     }
                 }
             }
+        }
+
+        // 🔔 Incoming call dialog
+        incomingCallFrom?.let { caller ->
+            AlertDialog(
+                onDismissRequest = {
+                    callController.rejectCall(caller)
+                    incomingCallFrom = null
+                },
+                title = { Text("Incoming Call") },
+                text = { Text("Call from $caller") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        callController.acceptCall(caller)
+                        incomingCallFrom = null
+                        activeCallPeerId = caller
+                    }) { Text("Accept") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        callController.rejectCall(caller)
+                        incomingCallFrom = null
+                    }) { Text("Reject") }
+                }
+            )
+        }
+
+        // 📞 Active call interface
+        activeCallPeerId?.let { peerId ->
+            if (callController.isInCall()) {
+                ActiveCallInterface(
+                    peerId = peerId,
+                    onEndCall = {
+                        callController.endCall(peerId)
+                        activeCallPeerId = null
+                    }
+                )
+            }
+        }
+
+        // ⚙️ MQTT Settings Dialog
+        if (showSettingsDialog) {
+            MqttSettingsScreen(
+                mqttManager = mqttManager,
+                context = context,
+                onDismiss = { showSettingsDialog = false }
+            )
+        }
+        
+        // ⚙️ Server Settings Dialog
+        if (showServerSettingsDialog) {
+            ServerSettingsScreen(
+                mqttManager = mqttManager,
+                context = context,
+                onDismiss = { showServerSettingsDialog = false },
+                onTileServerUpdate = { newUrl ->
+                    tileServerUrl = newUrl
+                },
+                onAsteriskServerUpdate = { newIp ->
+                    asteriskServerIp = newIp
+                    // Reconnect IAX with new IP
+                    (context as? MainActivity)?.let { activity ->
+                        activity.reconnectIax(newIp)
+                    }
+                }
+            )
         }
     }
 }
@@ -812,8 +1033,10 @@ private fun MobileLayout(
     onSelectDevice: (String) -> Unit,
     locationState: LocationState,
     myDeviceId: String,
+    tileServerUrl: String,
     onFullMap: () -> Unit,
-    onPickFile: () -> Unit
+    onPickFile: () -> Unit,
+    callController: CallController
 ) {
     Column(
         modifier = Modifier
@@ -825,6 +1048,7 @@ private fun MobileLayout(
             devices = devices,
             locationState = locationState,
             myDeviceId = myDeviceId,
+            tileServerUrl = tileServerUrl,
             onFullScreen = onFullMap
         )
         ChatPane(
@@ -836,7 +1060,8 @@ private fun MobileLayout(
             onAddAttachment = onAddAttachment,
             onRemoveAttachment = onRemoveAttachment,
             onSend = onMessageSend,
-            onPickFile = onPickFile
+            onPickFile = onPickFile,
+            callController = callController
         )
     }
 }
@@ -862,8 +1087,10 @@ private fun MediumLayout(
     onSend: (String, Attachment?) -> Unit,
     locationState: LocationState,
     myDeviceId: String,
+    tileServerUrl: String,
     onFullMap: () -> Unit,
-    onPickFile: () -> Unit
+    onPickFile: () -> Unit,
+    callController: CallController
 ) {
     Row(
         modifier = Modifier
@@ -895,6 +1122,7 @@ private fun MediumLayout(
                 devices = devices,
                 locationState = locationState,
                 myDeviceId = myDeviceId,
+                tileServerUrl = tileServerUrl,
                 onFullScreen = onFullMap
             )
             ChatPane(
@@ -906,7 +1134,8 @@ private fun MediumLayout(
                 onAddAttachment = onAddAttachment,
                 onRemoveAttachment = onRemoveAttachment,
                 onSend = onSend,
-                onPickFile = onPickFile
+                onPickFile = onPickFile,
+                callController = callController
             )
         }
     }
@@ -931,8 +1160,10 @@ private fun ExpandedLayout(
     onSend: (String, Attachment?) -> Unit,
     locationState: LocationState,
     myDeviceId: String,
+    tileServerUrl: String,
     onFullMap: () -> Unit,
-    onPickFile: () -> Unit
+    onPickFile: () -> Unit,
+    callController: CallController
 ) {
     Row(
         modifier = Modifier
@@ -962,6 +1193,7 @@ private fun ExpandedLayout(
                 devices = devices,
                 locationState = locationState,
                 myDeviceId = myDeviceId,
+                tileServerUrl = tileServerUrl,
                 onFullScreen = onFullMap
             )
         }
@@ -975,6 +1207,7 @@ private fun ExpandedLayout(
             onRemoveAttachment = onRemoveAttachment,
             onSend = onSend,
             onPickFile = onPickFile,
+            callController = callController,
             modifier = Modifier
                 .width(360.dp)
                 .fillMaxHeight()
@@ -1045,6 +1278,7 @@ private fun MapCard(
     devices: List<Device>,
     locationState: LocationState,
     myDeviceId: String,
+    tileServerUrl: String,
     onFullScreen: () -> Unit
 ){
     ElevatedCard(
@@ -1068,6 +1302,7 @@ private fun MapCard(
                 },
                 currentLocation = locationState,
                 myDeviceId = myDeviceId,
+                tileServerUrl = tileServerUrl,
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -1127,6 +1362,7 @@ private fun ChatPane(
     onRemoveAttachment: (Attachment) -> Unit,
     onSend: (String, Attachment?) -> Unit,
     onPickFile: () -> Unit,
+    callController: CallController,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -1144,14 +1380,24 @@ private fun ChatPane(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Column {
-                Text(device?.displayName ?: "No device selected", style = MaterialTheme.typography.headlineSmall)
-                if (device != null) {
-                    Text(
-                        "Last seen ${formatRelativeTime(device.lastSeen)}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary
-                    )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column {
+                    Text(device?.displayName ?: "No device selected", style = MaterialTheme.typography.headlineSmall)
+                    if (device != null) {
+                        Text(
+                            "Last seen ${formatRelativeTime(device.lastSeen)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextSecondary
+                        )
+                    }
+                }
+                device?.let {
+                    IconButton(onClick = {
+                        callController.outgoingCall(it.clientId)
+                        // Will show call interface when CALL_ACCEPT is received
+                    }) {
+                        Icon(Icons.Default.Call, contentDescription = "Call")
+                    }
                 }
             }
             device?.let { StatusDot(it.status) }
@@ -1354,6 +1600,100 @@ private fun formatSize(bytes: Long): String {
 }
 
 @Composable
+private fun ActiveCallInterface(
+    peerId: String,
+    onEndCall: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.7f)),
+        contentAlignment = Alignment.Center
+    ) {
+        ElevatedCard(
+            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
+            colors = CardDefaults.elevatedCardColors(
+                containerColor = Surface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
+                // Call icon
+                Box(
+                    modifier = Modifier
+                        .size(120.dp)
+                        .background(
+                            color = PrimaryBlue.copy(alpha = 0.2f),
+                            shape = CircleShape
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Phone,
+                        contentDescription = "Call",
+                        modifier = Modifier.size(64.dp),
+                        tint = PrimaryBlue
+                    )
+                }
+
+                // Peer ID
+                Text(
+                    text = "Call with",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = TextSecondary
+                )
+                Text(
+                    text = peerId,
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
+
+                // Call status
+                Text(
+                    text = "Call in progress...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // End call button
+                IconButton(
+                    onClick = onEndCall,
+                    modifier = Modifier
+                        .size(64.dp)
+                        .background(
+                            color = Color.Red.copy(alpha = 0.2f),
+                            shape = CircleShape
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PhoneDisabled,
+                        contentDescription = "End Call",
+                        modifier = Modifier.size(32.dp),
+                        tint = Color.Red
+                    )
+                }
+                Text(
+                    text = "End Call",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.Red
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun MqttConnectingOverlay() {
     Box(
         modifier = Modifier
@@ -1382,13 +1722,13 @@ private fun MqttConnectingOverlay() {
     }
 }
 
-@Preview(showBackground = true, widthDp = 420)
-@Composable
-private fun MobilePreview() {
-    ISRO_APPTheme {
-        // Preview uses a local MqttManager instance without connecting.
-        // This keeps the UI happy without doing real network work.
-        val previewMqttManager = MqttManager(myId = "preview")
-        IsroApp(mqttManager = previewMqttManager)
-    }
-}
+// Preview disabled - requires CallController which needs real Context
+// @Preview(showBackground = true, widthDp = 420)
+// @Composable
+// private fun MobilePreview() {
+//     ISRO_APPTheme {
+//         // Preview requires CallController which needs real Context and dependencies
+//         // val previewMqttManager = MqttManager(myId = "preview")
+//         // IsroApp(mqttManager = previewMqttManager, callController = ...)
+//     }
+// }
