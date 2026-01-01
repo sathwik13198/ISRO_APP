@@ -67,6 +67,8 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -125,6 +127,8 @@ import com.example.isro_app.mqtt.MqttManager
 import com.example.isro_app.mqtt.MqttConnectionState
 import com.example.isro_app.mqtt.CallEvent
 import com.example.isro_app.settings.MqttSettingsScreen
+import com.example.isro_app.settings.ServerSettingsScreen
+import com.example.isro_app.settings.ServerSettingsManager
 import com.example.isro_app.MapDevice
 import android.widget.Toast
 import androidx.compose.material3.CircularProgressIndicator
@@ -140,6 +144,23 @@ class MainActivity : ComponentActivity() {
     private lateinit var iaxManager: IaxManager
     lateinit var callController: CallController
     
+    fun reconnectIax(newIp: String) {
+        try {
+            if (::iaxManager.isInitialized) {
+                iaxManager.hangup()
+            }
+            iaxManager = IaxManager(newIp)
+            iaxManager.connect()
+            callController = CallController(
+                context = this,
+                mqtt = (application as MyApplication).mqttManager,
+                iax = iaxManager
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Failed to reconnect IAX", e)
+        }
+    }
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
     
@@ -149,7 +170,8 @@ class MainActivity : ComponentActivity() {
         config.osmdroidTileCache = File(filesDir, "osmdroid")
     
         val mqttManager = (application as MyApplication).mqttManager
-        iaxManager = IaxManager("192.168.29.242") //asterisk ip
+        val serverSettings = ServerSettingsManager.loadSettings(this)
+        iaxManager = IaxManager(serverSettings.asteriskServerIp)
         iaxManager.connect()
 
         callController = CallController(
@@ -254,6 +276,10 @@ private fun IsroApp(
     val locationState by locationViewModel.location.collectAsState()
     val context = LocalContext.current
     val windowSize = rememberWindowSize()
+    
+    // Server settings state
+    var tileServerUrl by remember { mutableStateOf(ServerSettingsManager.loadSettings(context).tileServerUrl) }
+    var asteriskServerIp by remember { mutableStateOf(ServerSettingsManager.loadSettings(context).asteriskServerIp) }
 
     // Get MQTT connection state from app-wide manager
     val mqttState by mqttManager.connectionState.collectAsState()
@@ -293,6 +319,8 @@ private fun IsroApp(
 
     var isMapFullscreen by rememberSaveable { mutableStateOf(false) }
     var showSettingsDialog by rememberSaveable { mutableStateOf(false) }
+    var showServerSettingsDialog by rememberSaveable { mutableStateOf(false) }
+    var showMenu by rememberSaveable { mutableStateOf(false) }
     
     var selectedDeviceId by rememberSaveable { 
         mutableStateOf("")
@@ -638,6 +666,30 @@ private fun IsroApp(
                         IconButton(onClick = { showSettingsDialog = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "MQTT Settings")
                         }
+                        Box {
+                            IconButton(onClick = { showMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                            }
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("MQTT") },
+                                    onClick = {
+                                        showMenu = false
+                                        showSettingsDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Configure Server") },
+                                    onClick = {
+                                        showMenu = false
+                                        showServerSettingsDialog = true
+                                    }
+                                )
+                            }
+                        }
                     }
                 )
             }
@@ -649,12 +701,13 @@ private fun IsroApp(
                         .fillMaxSize()
                         .padding(paddingValues)
                 ) {
-                    OfflineMapView(
+                            OfflineMapView(
                         devices = filtered.map {
                             MapDevice(it.clientId, it.lat, it.lon)
                         },
                         currentLocation = locationState,
                         myDeviceId = myDeviceId,
+                        tileServerUrl = tileServerUrl,
                         modifier = Modifier.fillMaxSize()
                     )
 
@@ -706,6 +759,7 @@ private fun IsroApp(
                             },
                             locationState = locationState,
                             myDeviceId = myDeviceId,
+                            tileServerUrl = tileServerUrl,
                             onFullMap = { isMapFullscreen = true },
                             onPickFile = pickFile,
                             callController = callController
@@ -738,6 +792,7 @@ private fun IsroApp(
                             },
                             locationState = locationState,
                             myDeviceId = myDeviceId,
+                            tileServerUrl = tileServerUrl,
                             onFullMap = { isMapFullscreen = true },
                             onPickFile = pickFile,
                             callController = callController
@@ -768,6 +823,7 @@ private fun IsroApp(
                             },
                             locationState = locationState,
                             myDeviceId = myDeviceId,
+                            tileServerUrl = tileServerUrl,
                             onFullMap = { isMapFullscreen = true },
                             onPickFile = pickFile,
                             callController = callController
@@ -826,6 +882,25 @@ private fun IsroApp(
                 mqttManager = mqttManager,
                 context = context,
                 onDismiss = { showSettingsDialog = false }
+            )
+        }
+        
+        // ⚙️ Server Settings Dialog
+        if (showServerSettingsDialog) {
+            ServerSettingsScreen(
+                mqttManager = mqttManager,
+                context = context,
+                onDismiss = { showServerSettingsDialog = false },
+                onTileServerUpdate = { newUrl ->
+                    tileServerUrl = newUrl
+                },
+                onAsteriskServerUpdate = { newIp ->
+                    asteriskServerIp = newIp
+                    // Reconnect IAX with new IP
+                    (context as? MainActivity)?.let { activity ->
+                        activity.reconnectIax(newIp)
+                    }
+                }
             )
         }
     }
@@ -958,6 +1033,7 @@ private fun MobileLayout(
     onSelectDevice: (String) -> Unit,
     locationState: LocationState,
     myDeviceId: String,
+    tileServerUrl: String,
     onFullMap: () -> Unit,
     onPickFile: () -> Unit,
     callController: CallController
@@ -972,6 +1048,7 @@ private fun MobileLayout(
             devices = devices,
             locationState = locationState,
             myDeviceId = myDeviceId,
+            tileServerUrl = tileServerUrl,
             onFullScreen = onFullMap
         )
         ChatPane(
@@ -1010,6 +1087,7 @@ private fun MediumLayout(
     onSend: (String, Attachment?) -> Unit,
     locationState: LocationState,
     myDeviceId: String,
+    tileServerUrl: String,
     onFullMap: () -> Unit,
     onPickFile: () -> Unit,
     callController: CallController
@@ -1044,6 +1122,7 @@ private fun MediumLayout(
                 devices = devices,
                 locationState = locationState,
                 myDeviceId = myDeviceId,
+                tileServerUrl = tileServerUrl,
                 onFullScreen = onFullMap
             )
             ChatPane(
@@ -1081,6 +1160,7 @@ private fun ExpandedLayout(
     onSend: (String, Attachment?) -> Unit,
     locationState: LocationState,
     myDeviceId: String,
+    tileServerUrl: String,
     onFullMap: () -> Unit,
     onPickFile: () -> Unit,
     callController: CallController
@@ -1113,6 +1193,7 @@ private fun ExpandedLayout(
                 devices = devices,
                 locationState = locationState,
                 myDeviceId = myDeviceId,
+                tileServerUrl = tileServerUrl,
                 onFullScreen = onFullMap
             )
         }
@@ -1197,6 +1278,7 @@ private fun MapCard(
     devices: List<Device>,
     locationState: LocationState,
     myDeviceId: String,
+    tileServerUrl: String,
     onFullScreen: () -> Unit
 ){
     ElevatedCard(
@@ -1220,6 +1302,7 @@ private fun MapCard(
                 },
                 currentLocation = locationState,
                 myDeviceId = myDeviceId,
+                tileServerUrl = tileServerUrl,
                 modifier = Modifier.fillMaxSize()
             )
 

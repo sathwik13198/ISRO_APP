@@ -59,10 +59,9 @@ sealed class CallEvent {
 
 class MqttManager(
     var myId: String,
-    private var settings: MqttSettings = MqttSettings()
+    private var settings: MqttSettings = MqttSettings(),
+    private var attachmentServer: String = "http://192.168.29.242:8090"
 ) {
-
-    private val attachmentServer = "http://10.122.97.180:8090"
 
     private val gpsTopic = "gps/location"
     private var inboxTopic = "$myId/inbox"
@@ -396,6 +395,10 @@ class MqttManager(
     }
 
     // -------- ATTACHMENT UPLOAD + MQTT --------
+    
+    fun updateAttachmentServer(serverUrl: String) {
+        attachmentServer = serverUrl
+    }
 
     private fun getFileName(uri: Uri, resolver: ContentResolver): String {
         resolver.query(uri, null, null, null, null)?.use { cursor ->
