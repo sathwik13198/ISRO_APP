@@ -192,21 +192,21 @@ fun OfflineMapView(
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // 🖐️ PAN MODE (disable follow)
-            IconButton(
-                onClick = { followMode.value = false },
-                modifier = Modifier.background(Color.Black.copy(alpha = 0.6f), CircleShape)
-            ) {
-                Text("🖐️", color = Color.White)
-            }
+            // // 🖐️ PAN MODE (disable follow)
+            // IconButton(
+            //     onClick = { followMode.value = false },
+            //     modifier = Modifier.background(Color.Black.copy(alpha = 0.6f), CircleShape)
+            // ) {
+            //     Text("🖐️", color = Color.White)
+            // }
 
-            // 🎯 FOLLOW MODE
-            IconButton(
-                onClick = { followMode.value = true },
-                modifier = Modifier.background(Color.Black.copy(alpha = 0.6f), CircleShape)
-            ) {
-                Text("🎯", color = Color.White)
-            }
+            // // 🎯 FOLLOW MODE
+            // IconButton(
+            //     onClick = { followMode.value = true },
+            //     modifier = Modifier.background(Color.Black.copy(alpha = 0.6f), CircleShape)
+            // ) {
+            //     Text("🎯", color = Color.White)
+            // }
 
             // ➕ ZOOM IN
             IconButton(

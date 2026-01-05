@@ -139,6 +139,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.net.Inet4Address
+import java.net.NetworkInterface
 
 class MainActivity : ComponentActivity() {
     private lateinit var iaxManager: IaxManager
@@ -276,6 +278,13 @@ private fun IsroApp(
     val locationState by locationViewModel.location.collectAsState()
     val context = LocalContext.current
     val windowSize = rememberWindowSize()
+    
+    // Device IP state
+    var deviceIp by remember { mutableStateOf<String?>(null) }
+    
+    LaunchedEffect(Unit) {
+        deviceIp = getLocalIpAddress()
+    }
     
     // Server settings state
     var tileServerUrl by remember { mutableStateOf(ServerSettingsManager.loadSettings(context).tileServerUrl) }
@@ -622,7 +631,7 @@ private fun IsroApp(
                                 style = MaterialTheme.typography.headlineSmall
                             )
                             Text(
-                                text = "Network: 192.168.1.0/24",
+                                text = deviceIp?.let { "Device IP: $it" } ?: "Network: detecting…",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = TextSecondary
                             )
@@ -1719,6 +1728,16 @@ private fun MqttConnectingOverlay() {
                 )
             }
         }
+    }
+}
+
+fun getLocalIpAddress(): String? {
+    return try {
+        NetworkInterface.getNetworkInterfaces().toList().flatMap { it.inetAddresses.toList() }
+            .firstOrNull { !it.isLoopbackAddress && it is Inet4Address }
+            ?.hostAddress
+    } catch (e: Exception) {
+        null
     }
 }
 
