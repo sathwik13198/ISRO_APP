@@ -1,5 +1,6 @@
 package com.example.iax;
 
+import android.content.Context;
 import android.util.Log;
 
 public class IaxManager implements IaxUdpTransport.IaxFrameListener, IaxAudioHandler.IaxAudioCallback {
@@ -8,6 +9,7 @@ public class IaxManager implements IaxUdpTransport.IaxFrameListener, IaxAudioHan
 
     private final IaxUdpTransport udp;
     private final String asteriskIp;
+    private final Context context;
     private IaxAudioHandler audioHandler;
     private int sourceCallNumber;
     private int destinationCallNumber = 0;
@@ -27,14 +29,16 @@ public class IaxManager implements IaxUdpTransport.IaxFrameListener, IaxAudioHan
         void onCallAccepted(int destinationCallNumber);
         void onCallRejected();
         void onCallHangup();
+        void onIncomingCall(String peerId, int sourceCallNumber);
     }
 
-    public IaxManager(String asteriskIp) {
+    public IaxManager(Context context, String asteriskIp) {
+        this.context = context.getApplicationContext();
         this.asteriskIp = asteriskIp;
         this.udp = new IaxUdpTransport();
         this.udp.setFrameListener(this);
         this.sourceCallNumber = IaxUtils.generateCallNumber();
-        this.audioHandler = new IaxAudioHandler(this);
+        this.audioHandler = new IaxAudioHandler(this.context, this);
     }
 
     public void setCallEventListener(CallEventListener listener) {
@@ -169,20 +173,23 @@ public class IaxManager implements IaxUdpTransport.IaxFrameListener, IaxAudioHan
      * Handle NEW frame (incoming call)
      */
     private void handleNewFrame(IaxFrame frame) {
-        Log.d(TAG, "Received NEW frame");
+        Log.d(TAG, "Received NEW frame - INCOMING CALL");
         destinationCallNumber = frame.getSourceCallNumber();
-
+        
         // Extract called number from frame data
         String calledNumber = IaxUtils.extractCalledNumber(frame.getData());
         if (calledNumber != null) {
             currentPeerId = calledNumber;
         }
-
+        
         callState = CallState.RINGING;
-
-        // Notify listener (if set) - Android app will handle MQTT signaling
-        // For now, auto-accept for simplicity (can be changed later)
-        Log.d(TAG, "Incoming call from " + calledNumber);
+        
+        // ✅ NOTIFY UI ABOUT INCOMING CALL
+        if (callEventListener != null) {
+            callEventListener.onIncomingCall(calledNumber, destinationCallNumber);
+        }
+        
+        Log.d(TAG, "Incoming call from " + calledNumber + " (call number: " + destinationCallNumber + ")");
     }
 
     /**
@@ -272,6 +279,16 @@ public class IaxManager implements IaxUdpTransport.IaxFrameListener, IaxAudioHan
                     sourceCallNumber, destinationCallNumber, audioData);
             udp.sendFrame(voiceFrame);
         }
+    }
+
+    /**
+     * Called when audio capture needs RECORD_AUDIO permission but it is not granted.
+     * Higher layers (Activity) are already responsible for requesting this permission,
+     * so here we just log for diagnostics.
+     */
+    @Override
+    public void onPermissionRequired() {
+        Log.w(TAG, "RECORD_AUDIO permission required for IAX audio, but not granted");
     }
 
     /**

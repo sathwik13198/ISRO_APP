@@ -5,6 +5,9 @@ import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.MediaRecorder;
 import android.util.Log;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import androidx.core.content.ContextCompat;
 
 /**
  * Handles audio capture and playback for IAX calls
@@ -17,7 +20,7 @@ public class IaxAudioHandler {
     // Audio configuration for G.711 μ-law
     private static final int SAMPLE_RATE = 8000; // 8 kHz for G.711
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
-    private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
+    private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_8BIT;
     private static final int BUFFER_SIZE_FACTOR = 2; // Buffer size multiplier
 
     private AudioRecord audioRecord;
@@ -28,12 +31,15 @@ public class IaxAudioHandler {
     private Thread playbackThread;
     private IaxAudioCallback callback;
     private int bufferSize;
+    private Context context;
 
     public interface IaxAudioCallback {
         void onAudioDataCaptured(byte[] audioData);
+        void onPermissionRequired(); // Add callback for permission request
     }
 
-    public IaxAudioHandler(IaxAudioCallback callback) {
+    public IaxAudioHandler(Context context, IaxAudioCallback callback) {
+        this.context = context;
         this.callback = callback;
         initializeAudio();
     }
@@ -55,11 +61,35 @@ public class IaxAudioHandler {
     }
 
     /**
-     * Start audio capture
+     * Check if RECORD_AUDIO permission is granted
+     */
+    private boolean checkAudioPermission() {
+        if (context == null) {
+            Log.e(TAG, "Context is null, cannot check permission");
+            return false;
+        }
+
+        return ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /**
+     * Start audio capture with permission check
      */
     public void startCapture() {
         if (isRecording) {
             Log.w(TAG, "Already recording");
+            return;
+        }
+
+        // Check for audio recording permission
+        if (!checkAudioPermission()) {
+            Log.w(TAG, "RECORD_AUDIO permission not granted");
+            if (callback != null) {
+                callback.onPermissionRequired();
+            }
             return;
         }
 
@@ -73,6 +103,7 @@ public class IaxAudioHandler {
 
             if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
                 Log.e(TAG, "AudioRecord initialization failed");
+                releaseAudioRecord();
                 return;
             }
 
@@ -83,9 +114,16 @@ public class IaxAudioHandler {
             captureThread.start();
 
             Log.d(TAG, "Audio capture started");
+        } catch (SecurityException e) {
+            Log.e(TAG, "SecurityException: RECORD_AUDIO permission denied", e);
+            if (callback != null) {
+                callback.onPermissionRequired();
+            }
+            releaseAudioRecord();
         } catch (Exception e) {
             Log.e(TAG, "Failed to start audio capture", e);
             isRecording = false;
+            releaseAudioRecord();
         }
     }
 
@@ -104,21 +142,12 @@ public class IaxAudioHandler {
                 captureThread.join(1000);
             } catch (InterruptedException e) {
                 Log.w(TAG, "Capture thread join interrupted", e);
+                Thread.currentThread().interrupt();
             }
             captureThread = null;
         }
 
-        if (audioRecord != null) {
-            try {
-                if (audioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
-                    audioRecord.stop();
-                }
-                audioRecord.release();
-            } catch (Exception e) {
-                Log.e(TAG, "Error stopping AudioRecord", e);
-            }
-            audioRecord = null;
-        }
+        releaseAudioRecord();
 
         Log.d(TAG, "Audio capture stopped");
     }
@@ -143,6 +172,7 @@ public class IaxAudioHandler {
 
             if (audioTrack.getState() != AudioTrack.STATE_INITIALIZED) {
                 Log.e(TAG, "AudioTrack initialization failed");
+                releaseAudioTrack();
                 return;
             }
 
@@ -153,9 +183,13 @@ public class IaxAudioHandler {
             playbackThread.start();
 
             Log.d(TAG, "Audio playback started");
+        } catch (SecurityException e) {
+            Log.e(TAG, "SecurityException in AudioTrack", e);
+            releaseAudioTrack();
         } catch (Exception e) {
             Log.e(TAG, "Failed to start audio playback", e);
             isPlaying = false;
+            releaseAudioTrack();
         }
     }
 
@@ -174,21 +208,12 @@ public class IaxAudioHandler {
                 playbackThread.join(1000);
             } catch (InterruptedException e) {
                 Log.w(TAG, "Playback thread join interrupted", e);
+                Thread.currentThread().interrupt();
             }
             playbackThread = null;
         }
 
-        if (audioTrack != null) {
-            try {
-                if (audioTrack.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) {
-                    audioTrack.stop();
-                }
-                audioTrack.release();
-            } catch (Exception e) {
-                Log.e(TAG, "Error stopping AudioTrack", e);
-            }
-            audioTrack = null;
-        }
+        releaseAudioTrack();
 
         Log.d(TAG, "Audio playback stopped");
     }
@@ -210,6 +235,8 @@ public class IaxAudioHandler {
             if (written < 0) {
                 Log.w(TAG, "AudioTrack write error: " + written);
             }
+        } catch (SecurityException e) {
+            Log.e(TAG, "SecurityException writing to AudioTrack", e);
         } catch (Exception e) {
             Log.e(TAG, "Error writing audio data", e);
         }
@@ -236,6 +263,9 @@ public class IaxAudioHandler {
                     Log.e(TAG, "AudioRecord read error: BAD_VALUE");
                     break;
                 }
+            } catch (SecurityException e) {
+                Log.e(TAG, "SecurityException in capture loop", e);
+                break;
             } catch (Exception e) {
                 Log.e(TAG, "Error in capture loop", e);
                 break;
@@ -255,11 +285,46 @@ public class IaxAudioHandler {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 break;
             }
         }
 
         Log.d(TAG, "Playback loop ended");
+    }
+
+    /**
+     * Helper method to release AudioRecord safely
+     */
+    private void releaseAudioRecord() {
+        if (audioRecord != null) {
+            try {
+                if (audioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
+                    audioRecord.stop();
+                }
+                audioRecord.release();
+            } catch (Exception e) {
+                Log.e(TAG, "Error releasing AudioRecord", e);
+            }
+            audioRecord = null;
+        }
+    }
+
+    /**
+     * Helper method to release AudioTrack safely
+     */
+    private void releaseAudioTrack() {
+        if (audioTrack != null) {
+            try {
+                if (audioTrack.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) {
+                    audioTrack.stop();
+                }
+                audioTrack.release();
+            } catch (Exception e) {
+                Log.e(TAG, "Error releasing AudioTrack", e);
+            }
+            audioTrack = null;
+        }
     }
 
     /**
@@ -284,4 +349,3 @@ public class IaxAudioHandler {
         return isPlaying;
     }
 }
-

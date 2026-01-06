@@ -14,6 +14,10 @@ class CallController(
 
     private val TAG = "CallController"
     private var currentPeerId: String? = null
+    private var incomingCallNumber: Int = 0  // Store incoming call number
+    
+    // Listener for UI to know about incoming IAX calls
+    var onIncomingIaxCall: ((String, Int) -> Unit)? = null
 
     init {
         // Set up IAX call event listener
@@ -25,106 +29,122 @@ class CallController(
 
             override fun onCallRejected() {
                 Log.d(TAG, "IAX call rejected")
-                currentPeerId = null
+                resetCall()
             }
 
             override fun onCallHangup() {
                 Log.d(TAG, "IAX call hung up")
-                currentPeerId = null
+                resetCall()
+            }
+            
+            // ✅ NEW: Handle incoming IAX calls
+            override fun onIncomingCall(peerId: String, sourceCallNumber: Int) {
+                Log.d(TAG, "IAX incoming call from $peerId, call number: $sourceCallNumber")
+                incomingCallNumber = sourceCallNumber
+                currentPeerId = peerId
+                onIncomingIaxCall?.invoke(peerId, sourceCallNumber)
             }
         })
     }
 
     /**
-     * Initiate outgoing call
-     * Flow: MQTT CALL_REQUEST → Wait for CALL_ACCEPT → Start IAX call
+     * Start outgoing call (caller initiates)
      */
-    fun outgoingCall(peerId: String) {
-        Log.d(TAG, "Outgoing call to $peerId")
-        currentPeerId = peerId
-        // Send MQTT call request (signaling)
-        mqtt.sendCallRequest(peerId)
-        // Note: IAX call will start when we receive CALL_ACCEPT
-    }
-
-    /**
-     * Accept incoming call
-     * Flow: MQTT CALL_ACCEPT → Start IAX call → Audio starts
-     */
-    fun acceptCall(peerId: String) {
-        Log.d(TAG, "Accepting call from $peerId")
+    fun startOutgoingCall(peerId: String) {
+        Log.d(TAG, "Starting outgoing call to $peerId")
         currentPeerId = peerId
         
-        // Send MQTT accept (signaling)
-        mqtt.sendCallAccept(peerId)
+        // Send MQTT call request (optional signaling)
+        mqtt.sendCallRequest(peerId)
         
         // Configure audio routing
         routeAudio()
         
-        // Start IAX call (this will start audio capture/playback)
+        // Start IAX call immediately
         iax.startCall(peerId)
+    }
+
+    /**
+     * Accept incoming IAX call (callee answers)
+     */
+    fun acceptIncomingCall() {
+        currentPeerId?.let { peerId ->
+            if (incomingCallNumber == 0) {
+                Log.e(TAG, "No incoming call number to accept")
+                return
+            }
+            
+            Log.d(TAG, "Accepting incoming IAX call from $peerId, call number: $incomingCallNumber")
+            
+            // Send MQTT accept (optional signaling)
+            mqtt.sendCallAccept(peerId)
+            
+            // Configure audio routing
+            routeAudio()
+            
+            // ✅ CORRECT: Accept the existing IAX call (not start new!)
+            iax.acceptCall(incomingCallNumber)
+        }
     }
 
     /**
      * Reject incoming call
      */
-    fun rejectCall(peerId: String) {
-        Log.d(TAG, "Rejecting call from $peerId")
-        mqtt.sendCallReject(peerId)
-        currentPeerId = null
+    fun rejectCall() {
+        currentPeerId?.let { peerId ->
+            Log.d(TAG, "Rejecting call from $peerId")
+            mqtt.sendCallReject(peerId)
+            // IAX will auto-reject when we don't answer
+        }
+        resetCall()
     }
 
     /**
-     * End current call
+     * End current active call
      */
-    fun endCall(peerId: String) {
-        Log.d(TAG, "Ending call with $peerId")
-        mqtt.sendCallEnd(peerId)
-        stopAudio()
-        currentPeerId = null
+    fun endCall() {
+        currentPeerId?.let { peerId ->
+            Log.d(TAG, "Ending call with $peerId")
+            mqtt.sendCallEnd(peerId)
+            iax.hangup()
+        }
+        resetCall()
     }
 
     /**
      * Called when we receive CALL_ACCEPT from peer via MQTT
-     * This means the peer accepted our call request - start IAX call
+     * (Peer accepted our outgoing call request)
      */
-    fun onCallAccepted(peerId: String) {
-        Log.d(TAG, "Received CALL_ACCEPT from $peerId, starting IAX call")
-        currentPeerId = peerId
-        
-        // Configure audio routing
-        routeAudio()
-        
-        // Start IAX call (audio will start automatically)
-        iax.startCall(peerId)
+    fun onCallAcceptedViaMqtt(peerId: String) {
+        Log.d(TAG, "Peer $peerId accepted our call via MQTT")
+        // Audio already started when we initiated the IAX call
+        // Nothing to do here except maybe update UI
     }
 
     /**
      * Called when we receive CALL_END from peer via MQTT
      */
-    fun onCallEnded() {
-        Log.d(TAG, "Received CALL_END, stopping audio")
-        stopAudio()
-        currentPeerId = null
+    fun onCallEndedViaMqtt() {
+        Log.d(TAG, "Received CALL_END via MQTT, hanging up")
+        endCall()
     }
 
     /**
      * Configure audio routing for voice call
      */
     private fun routeAudio() {
-        val audioManager =
-            context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         audioManager.isSpeakerphoneOn = false
         Log.d(TAG, "Audio routed for communication mode")
     }
 
     /**
-     * Stop audio and hangup IAX call
+     * Reset call state
      */
-    private fun stopAudio() {
-        iax.hangup()
-        Log.d(TAG, "Audio stopped, IAX call hung up")
+    private fun resetCall() {
+        currentPeerId = null
+        incomingCallNumber = 0
     }
 
     /**
@@ -140,5 +160,11 @@ class CallController(
     fun isInCall(): Boolean {
         return iax.getCallState() != IaxManager.CallState.IDLE
     }
+    
+    /**
+     * Check if there's an incoming call ringing
+     */
+    fun hasIncomingCall(): Boolean {
+        return iax.getCallState() == IaxManager.CallState.RINGING
+    }
 }
-

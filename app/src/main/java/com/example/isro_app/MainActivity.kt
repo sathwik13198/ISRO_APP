@@ -151,7 +151,7 @@ class MainActivity : ComponentActivity() {
             if (::iaxManager.isInitialized) {
                 iaxManager.hangup()
             }
-            iaxManager = IaxManager(newIp)
+            iaxManager = IaxManager(this, newIp)
             iaxManager.connect()
             callController = CallController(
                 context = this,
@@ -173,7 +173,7 @@ class MainActivity : ComponentActivity() {
     
         val mqttManager = (application as MyApplication).mqttManager
         val serverSettings = ServerSettingsManager.loadSettings(this)
-        iaxManager = IaxManager(serverSettings.asteriskServerIp)
+        iaxManager = IaxManager(this, serverSettings.asteriskServerIp)
         iaxManager.connect()
 
         callController = CallController(
@@ -336,9 +336,18 @@ private fun IsroApp(
     }
 
     // Call event handling
+   // Call event handling - BOTH MQTT and IAX
     val callEvent by mqttManager.callEvents.collectAsState()
     var incomingCallFrom by remember { mutableStateOf<String?>(null) }
     var activeCallPeerId by remember { mutableStateOf<String?>(null) }
+    var incomingIaxCallInfo by remember { mutableStateOf<Pair<String, Int>?>(null) }
+
+    // Setup IAX incoming call listener
+    LaunchedEffect(callController) {
+        callController.onIncomingIaxCall = { peerId, callNumber ->
+            incomingIaxCallInfo = Pair(peerId, callNumber)
+        }
+    }
 
     LaunchedEffect(callEvent) {
         when (val event = callEvent) {
@@ -349,15 +358,14 @@ private fun IsroApp(
                 Toast.makeText(context, "Call rejected by ${event.from}", Toast.LENGTH_SHORT).show()
             }
             is CallEvent.Ended -> {
-                callController.onCallEnded()
+                callController.onCallEndedViaMqtt()
                 incomingCallFrom = null
                 activeCallPeerId = null
             }
             is CallEvent.Accepted -> {
-                callController.onCallAccepted(event.from)
+                callController.onCallAcceptedViaMqtt(event.from)
                 incomingCallFrom = null
                 activeCallPeerId = event.from
-                // Call interface will show automatically when activeCallPeerId is set
             }
             null -> {}
         }
@@ -771,7 +779,11 @@ private fun IsroApp(
                             tileServerUrl = tileServerUrl,
                             onFullMap = { isMapFullscreen = true },
                             onPickFile = pickFile,
-                            callController = callController
+                            callController = callController,
+                            onStartCall = { peerId ->
+                                callController.startOutgoingCall(peerId)
+                                activeCallPeerId = peerId
+                            }
                         )
 
                         WindowSize.Medium -> MediumLayout(
@@ -804,7 +816,11 @@ private fun IsroApp(
                             tileServerUrl = tileServerUrl,
                             onFullMap = { isMapFullscreen = true },
                             onPickFile = pickFile,
-                            callController = callController
+                            callController = callController,
+                            onStartCall = { peerId ->
+                                callController.startOutgoingCall(peerId)
+                                activeCallPeerId = peerId
+                            }
                         )
 
                         WindowSize.Expanded -> ExpandedLayout(
@@ -835,7 +851,11 @@ private fun IsroApp(
                             tileServerUrl = tileServerUrl,
                             onFullMap = { isMapFullscreen = true },
                             onPickFile = pickFile,
-                            callController = callController
+                            callController = callController,
+                            onStartCall = { peerId ->
+                                callController.startOutgoingCall(peerId)
+                                activeCallPeerId = peerId
+                            }
                         )
                     }
 
@@ -848,37 +868,64 @@ private fun IsroApp(
         }
 
         // 🔔 Incoming call dialog
-        incomingCallFrom?.let { caller ->
-            AlertDialog(
-                onDismissRequest = {
-                    callController.rejectCall(caller)
+    // 🔔 Incoming call dialog (MQTT signaling)
+    incomingCallFrom?.let { caller ->
+        AlertDialog(
+            onDismissRequest = {
+                callController.rejectCall()
+                incomingCallFrom = null
+            },
+            title = { Text("Incoming Call (MQTT)") },
+            text = { Text("Call request from $caller") },
+            confirmButton = {
+                TextButton(onClick = {
+                    // For MQTT calls, we need to start the IAX call
+                    callController.startOutgoingCall(caller)
                     incomingCallFrom = null
-                },
-                title = { Text("Incoming Call") },
-                text = { Text("Call from $caller") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        callController.acceptCall(caller)
-                        incomingCallFrom = null
-                        activeCallPeerId = caller
-                    }) { Text("Accept") }
-                },
-                dismissButton = {
-                    TextButton(onClick = {
-                        callController.rejectCall(caller)
-                        incomingCallFrom = null
-                    }) { Text("Reject") }
-                }
-            )
-        }
+                    activeCallPeerId = caller
+                }) { Text("Accept & Call") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    callController.rejectCall()
+                    incomingCallFrom = null
+                }) { Text("Reject") }
+            }
+        )
+    }
 
+    // 🔔 Incoming IAX call dialog (actual voice call)
+    incomingIaxCallInfo?.let { (caller, callNumber) ->
+        AlertDialog(
+            onDismissRequest = {
+                callController.rejectCall()
+                incomingIaxCallInfo = null
+            },
+            title = { Text("Incoming Voice Call") },
+            text = { Text("Voice call from $caller\nTap accept to answer") },
+            confirmButton = {
+                TextButton(onClick = {
+                    callController.acceptIncomingCall()
+                    incomingIaxCallInfo = null
+                    activeCallPeerId = caller
+                }) { Text("Accept") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    callController.rejectCall()
+                    incomingIaxCallInfo = null
+                }) { Text("Reject") }
+            }
+        )
+    }
         // 📞 Active call interface
         activeCallPeerId?.let { peerId ->
             if (callController.isInCall()) {
                 ActiveCallInterface(
                     peerId = peerId,
                     onEndCall = {
-                        callController.endCall(peerId)
+                        // End the current call via controller and clear UI state
+                        callController.endCall()
                         activeCallPeerId = null
                     }
                 )
@@ -1045,7 +1092,8 @@ private fun MobileLayout(
     tileServerUrl: String,
     onFullMap: () -> Unit,
     onPickFile: () -> Unit,
-    callController: CallController
+    callController: CallController,
+    onStartCall: (String) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -1070,7 +1118,8 @@ private fun MobileLayout(
             onRemoveAttachment = onRemoveAttachment,
             onSend = onMessageSend,
             onPickFile = onPickFile,
-            callController = callController
+            callController = callController,
+            onStartCall = onStartCall
         )
     }
 }
@@ -1099,7 +1148,8 @@ private fun MediumLayout(
     tileServerUrl: String,
     onFullMap: () -> Unit,
     onPickFile: () -> Unit,
-    callController: CallController
+    callController: CallController,
+    onStartCall: (String) -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -1144,7 +1194,8 @@ private fun MediumLayout(
                 onRemoveAttachment = onRemoveAttachment,
                 onSend = onSend,
                 onPickFile = onPickFile,
-                callController = callController
+                callController = callController,
+                onStartCall = onStartCall
             )
         }
     }
@@ -1172,7 +1223,8 @@ private fun ExpandedLayout(
     tileServerUrl: String,
     onFullMap: () -> Unit,
     onPickFile: () -> Unit,
-    callController: CallController
+    callController: CallController,
+    onStartCall: (String) -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -1217,6 +1269,7 @@ private fun ExpandedLayout(
             onSend = onSend,
             onPickFile = onPickFile,
             callController = callController,
+            onStartCall = onStartCall,
             modifier = Modifier
                 .width(360.dp)
                 .fillMaxHeight()
@@ -1372,6 +1425,7 @@ private fun ChatPane(
     onSend: (String, Attachment?) -> Unit,
     onPickFile: () -> Unit,
     callController: CallController,
+    onStartCall: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -1401,10 +1455,13 @@ private fun ChatPane(
                     }
                 }
                 device?.let {
-                    IconButton(onClick = {
-                        callController.outgoingCall(it.clientId)
-                        // Will show call interface when CALL_ACCEPT is received
-                    }) {
+                    IconButton(
+                        onClick = {
+                            // Delegate call handling to parent so it can update shared call UI state
+                            onStartCall(it.clientId)
+                        },
+                        enabled = !callController.isInCall() && !callController.hasIncomingCall()
+                    ) {
                         Icon(Icons.Default.Call, contentDescription = "Call")
                     }
                 }
