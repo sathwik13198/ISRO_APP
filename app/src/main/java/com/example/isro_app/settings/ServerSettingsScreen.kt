@@ -38,8 +38,7 @@ fun ServerSettingsScreen(
     mqttManager: MqttManager,
     context: android.content.Context,
     onDismiss: () -> Unit,
-    onTileServerUpdate: (String) -> Unit,
-    onAsteriskServerUpdate: (String) -> Unit
+    onTileServerUpdate: (String) -> Unit
 ) {
     // Load current settings
     val currentSettings = remember { ServerSettingsManager.loadSettings(context) }
@@ -47,17 +46,14 @@ fun ServerSettingsScreen(
     // Form state
     var attachmentServerUrl by rememberSaveable { mutableStateOf(currentSettings.attachmentServerUrl) }
     var tileServerUrl by rememberSaveable { mutableStateOf(currentSettings.tileServerUrl) }
-    var asteriskServerIp by rememberSaveable { mutableStateOf(currentSettings.asteriskServerIp) }
     
     // Validation state
     var attachmentServerError by remember { mutableStateOf<String?>(null) }
     var tileServerError by remember { mutableStateOf<String?>(null) }
-    var asteriskServerError by remember { mutableStateOf<String?>(null) }
     
     // Connection status
     var attachmentStatus by remember { mutableStateOf(ConnectionStatus.Idle) }
     var tileStatus by remember { mutableStateOf(ConnectionStatus.Idle) }
-    var asteriskStatus by remember { mutableStateOf(ConnectionStatus.Idle) }
     
     var isSaving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -75,15 +71,6 @@ fun ServerSettingsScreen(
     LaunchedEffect(tileServerUrl) {
         tileServerError = if (tileServerUrl.isNotBlank() && !ServerSettingsManager.isValidTileServerUrl(tileServerUrl)) {
             ServerSettingsManager.getTileServerErrorMessage(tileServerUrl)
-        } else {
-            null
-        }
-    }
-    
-    // Validate Asterisk server IP on change
-    LaunchedEffect(asteriskServerIp) {
-        asteriskServerError = if (asteriskServerIp.isNotBlank() && !ServerSettingsManager.isValidAsteriskServerIp(asteriskServerIp)) {
-            ServerSettingsManager.getAsteriskServerErrorMessage(asteriskServerIp)
         } else {
             null
         }
@@ -166,41 +153,6 @@ fun ServerSettingsScreen(
                 tileStatus = ConnectionStatus.Error
                 delay(2000)
                 tileStatus = ConnectionStatus.Idle
-            }
-        }
-    }
-    
-    // Test Asterisk server connection
-    fun testAsteriskServer() {
-        if (asteriskServerError != null) return
-        
-        scope.launch {
-            asteriskStatus = ConnectionStatus.Testing
-            try {
-                val success = withContext(Dispatchers.IO) {
-                    try {
-                        val socket = Socket()
-                        socket.connect(InetSocketAddress(asteriskServerIp.trim(), 4569), 5000)
-                        socket.close()
-                        true
-                    } catch (e: Exception) {
-                        false
-                    }
-                }
-                
-                if (success) {
-                    asteriskStatus = ConnectionStatus.Connected
-                    delay(2000)
-                    asteriskStatus = ConnectionStatus.Idle
-                } else {
-                    asteriskStatus = ConnectionStatus.Error
-                    delay(2000)
-                    asteriskStatus = ConnectionStatus.Idle
-                }
-            } catch (e: Exception) {
-                asteriskStatus = ConnectionStatus.Error
-                delay(2000)
-                asteriskStatus = ConnectionStatus.Idle
             }
         }
     }
@@ -304,52 +256,6 @@ fun ServerSettingsScreen(
                 tileStatus = ConnectionStatus.Error
                 delay(2000)
                 tileStatus = ConnectionStatus.Idle
-            }
-        }
-    }
-    
-    // Connect to Asterisk server
-    fun connectAsteriskServer() {
-        if (asteriskServerError != null) return
-        
-        scope.launch {
-            asteriskStatus = ConnectionStatus.Testing
-            try {
-                val success = withContext(Dispatchers.IO) {
-                    try {
-                        val socket = Socket()
-                        socket.connect(InetSocketAddress(asteriskServerIp.trim(), 4569), 5000)
-                        socket.close()
-                        true
-                    } catch (e: Exception) {
-                        false
-                    }
-                }
-                
-                if (success) {
-                    // Update Asterisk server IP
-                    onAsteriskServerUpdate(asteriskServerIp.trim())
-                    
-                    // Save settings
-                    val newSettings = ServerSettings(
-                        attachmentServerUrl = currentSettings.attachmentServerUrl,
-                        tileServerUrl = currentSettings.tileServerUrl,
-                        asteriskServerIp = asteriskServerIp.trim()
-                    )
-                    ServerSettingsManager.saveSettings(context, newSettings)
-                    
-                    asteriskStatus = ConnectionStatus.Connected
-                    delay(2000)
-                    asteriskStatus = ConnectionStatus.Idle
-                } else {
-                    asteriskStatus = ConnectionStatus.Error
-                    delay(2000)
-                    asteriskStatus = ConnectionStatus.Idle
-                }
-            } catch (e: Exception) {
-                asteriskStatus = ConnectionStatus.Error
-                delay(2000)
-                asteriskStatus = ConnectionStatus.Idle
             }
         }
     }
@@ -535,94 +441,6 @@ fun ServerSettingsScreen(
                                 onClick = { connectTileServer() },
                                 modifier = Modifier.weight(1f),
                                 enabled = tileServerError == null && tileStatus != ConnectionStatus.Testing
-                            ) {
-                                Text("Connect")
-                            }
-                        }
-                    }
-                }
-                
-                // Asterisk Server
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Text(
-                            text = "Asterisk Server",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        
-                        OutlinedTextField(
-                            value = asteriskServerIp,
-                            onValueChange = { asteriskServerIp = it },
-                            label = { Text("Server IP") },
-                            placeholder = { Text("192.168.1.100") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            isError = asteriskServerError != null,
-                            supportingText = {
-                                if (asteriskServerError != null) {
-                                    Text(
-                                        text = asteriskServerError!!,
-                                        color = MaterialTheme.colorScheme.error
-                                    )
-                                } else {
-                                    Text("Format: xxx.xxx.xxx.xxx")
-                                }
-                            },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            trailingIcon = {
-                                when (asteriskStatus) {
-                                    ConnectionStatus.Testing -> {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(20.dp),
-                                            strokeWidth = 2.dp
-                                        )
-                                    }
-                                    ConnectionStatus.Connected -> {
-                                        Icon(
-                                            imageVector = Icons.Default.CheckCircle,
-                                            contentDescription = "Connected",
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                    ConnectionStatus.Error -> {
-                                        Icon(
-                                            imageVector = Icons.Default.Error,
-                                            contentDescription = "Error",
-                                            tint = MaterialTheme.colorScheme.error
-                                        )
-                                    }
-                                    else -> {}
-                                }
-                            }
-                        )
-                        
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = { testAsteriskServer() },
-                                modifier = Modifier.weight(1f),
-                                enabled = asteriskServerError == null && asteriskStatus != ConnectionStatus.Testing
-                            ) {
-                                Text("Test")
-                            }
-                            
-                            Button(
-                                onClick = { connectAsteriskServer() },
-                                modifier = Modifier.weight(1f),
-                                enabled = asteriskServerError == null && asteriskStatus != ConnectionStatus.Testing
                             ) {
                                 Text("Connect")
                             }

@@ -345,7 +345,15 @@ private fun IsroApp(
     // Setup IAX incoming call listener
     LaunchedEffect(callController) {
         callController.onIncomingIaxCall = { peerId, callNumber ->
-            incomingIaxCallInfo = Pair(peerId, callNumber)
+            // Only set incoming call info if we're not already in a call (IDLE state)
+            // This prevents showing incoming call dialog when we're the caller
+            val currentState = callController.getCallState()
+            if (currentState == com.example.iax.IaxManager.CallState.IDLE) {
+                incomingIaxCallInfo = Pair(peerId, callNumber)
+            } else {
+                // If we're already in a call, ignore this incoming call notification
+                android.util.Log.d("Call", "Ignoring incoming call from $peerId - already in call state: $currentState")
+            }
         }
     }
 
@@ -366,6 +374,8 @@ private fun IsroApp(
                 callController.onCallAcceptedViaMqtt(event.from)
                 incomingCallFrom = null
                 activeCallPeerId = event.from
+                // Clear incoming IAX call info when call is accepted
+                incomingIaxCallInfo = null
             }
             null -> {}
         }
@@ -379,6 +389,11 @@ private fun IsroApp(
             if (currentState == com.example.iax.IaxManager.CallState.IDLE && activeCallPeerId != null) {
                 // Call ended - clear UI
                 activeCallPeerId = null
+                incomingIaxCallInfo = null
+                incomingCallFrom = null
+            } else if (currentState == com.example.iax.IaxManager.CallState.ACTIVE) {
+                // Call is active - clear any incoming call info
+                incomingIaxCallInfo = null
             }
         }
     }
@@ -692,13 +707,6 @@ private fun IsroApp(
                                 onDismissRequest = { showMenu = false }
                             ) {
                                 DropdownMenuItem(
-                                    text = { Text("MQTT") },
-                                    onClick = {
-                                        showMenu = false
-                                        showSettingsDialog = true
-                                    }
-                                )
-                                DropdownMenuItem(
                                     text = { Text("Configure Server") },
                                     onClick = {
                                         showMenu = false
@@ -720,7 +728,7 @@ private fun IsroApp(
                 ) {
                             OfflineMapView(
                         devices = filtered.map {
-                            MapDevice(it.clientId, it.lat, it.lon)
+                            MapDevice(it.clientId, it.lat, it.lon, it.displayName)
                         },
                         currentLocation = locationState,
                         myDeviceId = myDeviceId,
@@ -739,7 +747,7 @@ private fun IsroApp(
                         Text("⬅", color = Color.White)
                     }
 
-                    if (mqttState == MqttConnectionState.Connecting) {
+                    if (mqttState == MqttConnectionState.Connecting && !callController.isInCall()) {
                         MqttConnectingOverlay()
                     }
                 }
@@ -783,6 +791,9 @@ private fun IsroApp(
                             onStartCall = { peerId ->
                                 callController.startOutgoingCall(peerId)
                                 activeCallPeerId = peerId
+                                // Clear any incoming call info when making outgoing call
+                                incomingIaxCallInfo = null
+                                incomingCallFrom = null
                             }
                         )
 
@@ -820,6 +831,9 @@ private fun IsroApp(
                             onStartCall = { peerId ->
                                 callController.startOutgoingCall(peerId)
                                 activeCallPeerId = peerId
+                                // Clear any incoming call info when making outgoing call
+                                incomingIaxCallInfo = null
+                                incomingCallFrom = null
                             }
                         )
 
@@ -855,12 +869,15 @@ private fun IsroApp(
                             onStartCall = { peerId ->
                                 callController.startOutgoingCall(peerId)
                                 activeCallPeerId = peerId
+                                // Clear any incoming call info when making outgoing call
+                                incomingIaxCallInfo = null
+                                incomingCallFrom = null
                             }
                         )
                     }
 
                     // Show MQTT connecting overlay
-                    if (mqttState == MqttConnectionState.Connecting) {
+                    if (mqttState == MqttConnectionState.Connecting && !callController.isInCall()) {
                         MqttConnectingOverlay()
                     }
                 }
@@ -895,28 +912,35 @@ private fun IsroApp(
     }
 
     // 🔔 Incoming IAX call dialog (actual voice call)
+    // Only show if we're not already in a call and have incoming call info
     incomingIaxCallInfo?.let { (caller, callNumber) ->
-        AlertDialog(
-            onDismissRequest = {
-                callController.rejectCall()
-                incomingIaxCallInfo = null
-            },
-            title = { Text("Incoming Voice Call") },
-            text = { Text("Voice call from $caller\nTap accept to answer") },
-            confirmButton = {
-                TextButton(onClick = {
-                    callController.acceptIncomingCall()
-                    incomingIaxCallInfo = null
-                    activeCallPeerId = caller
-                }) { Text("Accept") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
+        // Additional check: only show dialog if we're in IDLE or RINGING state
+        // This prevents showing dialog when we're the caller (CALLING or ACTIVE state)
+        val currentState = callController.getCallState()
+        if (currentState == com.example.iax.IaxManager.CallState.IDLE || 
+            currentState == com.example.iax.IaxManager.CallState.RINGING) {
+            AlertDialog(
+                onDismissRequest = {
                     callController.rejectCall()
                     incomingIaxCallInfo = null
-                }) { Text("Reject") }
-            }
-        )
+                },
+                title = { Text("Incoming Voice Call") },
+                text = { Text("Voice call from $caller\nTap accept to answer") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        callController.acceptIncomingCall()
+                        incomingIaxCallInfo = null
+                        activeCallPeerId = caller
+                    }) { Text("Accept") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        callController.rejectCall()
+                        incomingIaxCallInfo = null
+                    }) { Text("Reject") }
+                }
+            )
+        }
     }
         // 📞 Active call interface
         activeCallPeerId?.let { peerId ->
@@ -937,7 +961,14 @@ private fun IsroApp(
             MqttSettingsScreen(
                 mqttManager = mqttManager,
                 context = context,
-                onDismiss = { showSettingsDialog = false }
+                onDismiss = { showSettingsDialog = false },
+                onAsteriskServerUpdate = { newIp ->
+                    asteriskServerIp = newIp
+                    // Reconnect IAX with new IP
+                    (context as? MainActivity)?.let { activity ->
+                        activity.reconnectIax(newIp)
+                    }
+                }
             )
         }
         
@@ -949,13 +980,6 @@ private fun IsroApp(
                 onDismiss = { showServerSettingsDialog = false },
                 onTileServerUpdate = { newUrl ->
                     tileServerUrl = newUrl
-                },
-                onAsteriskServerUpdate = { newIp ->
-                    asteriskServerIp = newIp
-                    // Reconnect IAX with new IP
-                    (context as? MainActivity)?.let { activity ->
-                        activity.reconnectIax(newIp)
-                    }
                 }
             )
         }
@@ -1359,7 +1383,8 @@ private fun MapCard(
                     MapDevice(
                         id = device.clientId,
                         latitude = device.lat,
-                        longitude = device.lon
+                        longitude = device.lon,
+                        displayName = device.displayName
                     )
                 },
                 currentLocation = locationState,
